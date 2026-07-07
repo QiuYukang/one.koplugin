@@ -1,0 +1,1038 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>one.koplugin 交互设计 v3 · KOReader 真机风格</title>
+<style>
+  :root {
+    --page-bg: #eae7df;
+    --paper: #ffffff;
+    --ink: #000;
+    --ink-2: #555;
+    --ink-3: #888;
+    --line: #cfcabf;
+    --hint: #8a8378;
+    --sel: #000;
+    --sel-bg: #ffffff;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, "PingFang SC", "Helvetica Neue", sans-serif;
+    background: var(--page-bg);
+    color: var(--ink);
+    padding: 40px 20px 80px;
+    line-height: 1.55;
+  }
+  .wrap { max-width: 1240px; margin: 0 auto; }
+  h1 { font-size: 22px; font-weight: 600; margin-bottom: 4px; }
+  .subtitle { color: var(--ink-2); font-size: 13px; margin-bottom: 26px; }
+  .legend { color: var(--hint); font-size: 12px; margin-bottom: 26px; }
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+    gap: 26px;
+  }
+
+  /* ========== KOReader e-ink device frame ========== */
+  .device {
+    background: #1a1a1a;
+    border-radius: 14px;
+    padding: 12px 6px;
+    box-shadow: 0 6px 16px rgba(0,0,0,0.15);
+  }
+  .device .label {
+    color: #ccc; font-size: 11px; text-align: center;
+    margin-bottom: 6px; letter-spacing: 0.5px;
+  }
+  .screen {
+    background: #ffffff;
+    aspect-ratio: 3 / 4;
+    display: flex; flex-direction: column;
+    overflow: hidden;
+    font-family: "PingFang SC", "Helvetica Neue", "Songti SC", "Georgia", serif;
+    color: #000;
+    position: relative;
+  }
+
+  /* ========== KOReader TitleBar ========== */
+  .kb-title {
+    padding: 12px 12px 8px;
+    display: flex; justify-content: space-between; align-items: center;
+    border-bottom: 2px solid #000;
+  }
+  .kb-title .t {
+    font-size: 15px; font-weight: 700;
+    color: #000; letter-spacing: 0.5px;
+    flex: 1; text-align: center;
+  }
+  .kb-title .l, .kb-title .r {
+    width: 22px; text-align: center;
+    font-size: 16px; color: #000;
+  }
+  .kb-sub {
+    padding: 4px 12px 6px;
+    text-align: center;
+    font-size: 10px; color: #555;
+    border-bottom: 1px solid #000;
+  }
+
+  /* ========== KOReader Menu list ========== */
+  .kb-list { flex: 1; overflow: auto; background: #fff; }
+  .kb-item {
+    padding: 14px 16px;
+    display: flex; justify-content: space-between; align-items: center;
+    border-bottom: 1px solid #000;
+    font-size: 14px; color: #000;
+    background: #fff;
+    min-height: 44px;
+  }
+  .kb-item.tall { min-height: 56px; padding: 12px 16px; align-items: flex-start; flex-direction: column; gap: 4px;}
+  .kb-item .txt { flex: 1; }
+  .kb-item .mand { font-size: 12px; color: #555; margin-left: 12px; white-space: nowrap; }
+  .kb-item .arrow { color: #000; font-size: 14px; margin-left: 8px; }
+  .kb-item .desc { font-size: 11px; color: #666; line-height: 1.4; margin-top: 2px; }
+  .kb-item.sel {
+    background: #000; color: #fff;
+  }
+  .kb-item.sel .mand { color: #ddd; }
+  .kb-item.sel .arrow { color: #fff; }
+  .kb-item.dis { color: #999; }
+  .kb-item.dis .mand { color: #bbb; }
+
+  /* KOReader section header 分组标题（大字号+粗+居中） */
+  .kb-sec {
+    padding: 10px 16px 6px;
+    font-size: 11px; font-weight: 700;
+    color: #000; text-transform: uppercase; letter-spacing: 1px;
+    border-bottom: 1px solid #000;
+    background: #fff;
+  }
+
+  /* ========== KOReader Pagination footer ========== */
+  .kb-page {
+    border-top: 2px solid #000;
+    padding: 8px 12px;
+    display: flex; justify-content: space-between; align-items: center;
+    font-size: 12px; color: #000;
+    background: #fff;
+  }
+  .kb-page .p { padding: 2px 8px; }
+  .kb-page .center { flex: 1; text-align: center; font-weight: 600; }
+
+  /* ========== KOReader Status bar (reader) ========== */
+  .kb-status {
+    padding: 6px 12px;
+    display: flex; justify-content: space-between;
+    font-size: 10px; color: #000;
+    border-top: 1px solid #000;
+    background: #fff;
+  }
+
+  /* ========== reader page (crengine) ========== */
+  .reader {
+    flex: 1; padding: 18px 22px;
+    overflow: hidden;
+    font-family: "Songti SC", "Georgia", serif;
+    color: #000;
+    display: flex; flex-direction: column;
+    background: #fff;
+  }
+  .reader .r-h1 { font-size: 18px; font-weight: 600; margin: 0 0 6px; text-align: center; }
+  .reader .r-author { font-size: 11px; color: #555; text-align: center; margin-bottom: 14px; }
+  .reader .r-cover {
+    width: 60%; aspect-ratio: 3/4; margin: 30px auto 20px;
+    background: #000; color: #fff;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    font-family: "Georgia", serif;
+  }
+  .reader .r-cover .big { font-size: 34px; letter-spacing: 4px; }
+  .reader .r-cover .sm { font-size: 20px; font-weight: 300; margin-top: 6px; }
+  .reader .r-title-book { text-align: center; font-size: 18px; font-weight: 600; }
+  .reader .r-sub-book { text-align: center; font-size: 11px; color: #555; margin-top: 4px; }
+  .reader .r-img {
+    width: 100%; aspect-ratio: 3/2;
+    background:
+      repeating-linear-gradient(45deg, #ccc 0 6px, #b5b5b5 6px 12px);
+    margin: 4px 0 10px;
+  }
+  .reader .r-cite { font-size: 14px; line-height: 1.9; text-indent: 2em; margin-top: 4px; }
+  .reader .r-body p { font-size: 13.5px; line-height: 1.85; text-indent: 2em; margin-bottom: 6px; text-align: justify; }
+  .reader .r-quote { font-size: 12px; color: #555; padding: 6px 12px; border-left: 3px solid #000; margin: 8px 0; line-height: 1.7; }
+  .reader .r-q { font-weight: 600; }
+
+  /* ========== KOReader popup top menu (7-tab) ========== */
+  .kb-topmenu {
+    position: absolute; top: 0; left: 0; right: 0;
+    background: #fff;
+    border-bottom: 2px solid #000;
+  }
+  .kb-tabs {
+    display: flex;
+    border-bottom: 1px solid #000;
+  }
+  .kb-tabs .tab {
+    flex: 1; text-align: center;
+    padding: 8px 0;
+    font-size: 14px;
+    border-right: 1px solid #000;
+    color: #000;
+  }
+  .kb-tabs .tab:last-child { border-right: none; }
+  .kb-tabs .tab.active { background: #000; color: #fff; }
+  .kb-topmenu .kb-list { border-bottom: 2px solid #000; }
+
+  /* ========== KOReader dialog (non-fullscreen ButtonDialog) ========== */
+  .kb-dialog-shadow {
+    position: absolute; inset: 0;
+    background: rgba(0,0,0,0.25);
+    display: flex; align-items: center; justify-content: center;
+    padding: 22px;
+  }
+  .kb-dialog {
+    background: #fff;
+    border: 2px solid #000;
+    width: 100%;
+    max-height: 90%;
+    overflow: hidden;
+    display: flex; flex-direction: column;
+  }
+  .kb-dialog .head {
+    padding: 10px 14px;
+    font-size: 13px; font-weight: 700; color: #000;
+    text-align: center;
+    border-bottom: 2px solid #000;
+  }
+  .kb-dialog .body { overflow: auto; }
+  .kb-dialog .row {
+    padding: 11px 14px;
+    display: flex; justify-content: space-between; align-items: center;
+    border-bottom: 1px solid #000;
+    font-size: 13px;
+  }
+  .kb-dialog .row .k { color: #000; }
+  .kb-dialog .row .v { color: #555; font-size: 12px; }
+  .kb-dialog .row.sel { background: #000; color: #fff; }
+  .kb-dialog .row.sel .v { color: #ddd; }
+  .kb-dialog .actions {
+    display: flex; border-top: 2px solid #000;
+  }
+  .kb-dialog .actions .btn {
+    flex: 1; padding: 12px;
+    text-align: center;
+    font-size: 13px;
+    border-right: 1px solid #000;
+    color: #000;
+  }
+  .kb-dialog .actions .btn:last-child { border-right: none; }
+  .kb-dialog .actions .btn.primary { background: #000; color: #fff; }
+
+  /* ========== InfoMessage / Notification ========== */
+  .kb-info {
+    position: absolute;
+    top: 40%; left: 20px; right: 20px;
+    background: #fff;
+    border: 2px solid #000;
+    padding: 20px 14px;
+    text-align: center;
+    font-size: 13px; color: #000;
+  }
+  .kb-info .icon { font-size: 22px; margin-bottom: 10px; }
+  .kb-info .sub { font-size: 11px; color: #555; margin-top: 8px; line-height: 1.6; }
+  .kb-info .bar {
+    height: 4px; background: #e5e5e5; margin: 12px 20px 0;
+    border: 1px solid #000;
+  }
+  .kb-info .bar > div { height: 100%; background: #000; width: 60%; }
+
+  .kb-toast {
+    position: absolute;
+    bottom: 20px; left: 20px; right: 20px;
+    background: #000; color: #fff;
+    padding: 12px 14px;
+    text-align: center; font-size: 12px;
+    line-height: 1.5;
+  }
+
+  /* ========== DateTime spinner (KOReader) ========== */
+  .kb-spin {
+    padding: 20px;
+    display: flex; justify-content: center; gap: 6px;
+    font-family: "Georgia", serif;
+  }
+  .kb-spin .col {
+    flex: 1; text-align: center;
+    border: 1px solid #000;
+    max-width: 60px;
+  }
+  .kb-spin .col .up, .kb-spin .col .dn {
+    padding: 6px 0; font-size: 12px;
+    border-bottom: 1px solid #000;
+  }
+  .kb-spin .col .dn { border-bottom: none; border-top: 1px solid #000; }
+  .kb-spin .col .v { padding: 10px 0; font-size: 18px; font-weight: 600; }
+
+  /* ========== captions & specs ========== */
+  .caption { color: var(--ink-2); font-size: 12px; margin-top: 10px; line-height: 1.5; }
+  .caption b { color: var(--ink); }
+  .caption code {
+    background: #eae4d5; padding: 1px 5px; border-radius: 2px;
+    font-family: "SF Mono", Menlo, monospace; font-size: 11px;
+  }
+
+  .divider {
+    grid-column: 1 / -1;
+    margin: 30px 0 6px;
+    padding-bottom: 4px;
+    font-size: 14px; font-weight: 600;
+    border-bottom: 2px solid var(--line);
+  }
+
+  .spec-list {
+    grid-column: 1 / -1;
+    background: #fff;
+    border: 1px solid var(--line);
+    padding: 20px 24px;
+    font-size: 13px;
+    line-height: 1.7;
+  }
+  .spec-list h3 { font-size: 14px; margin-bottom: 8px; font-weight: 600; margin-top: 12px; }
+  .spec-list h3:first-child { margin-top: 0; }
+  .spec-list ul { margin-left: 20px; margin-bottom: 12px; }
+  .spec-list code {
+    background: #eae4d5; padding: 1px 6px; border-radius: 2px;
+    font-family: "SF Mono", Menlo, monospace; font-size: 12px;
+  }
+
+  .tree, .flow {
+    grid-column: 1 / -1;
+    background: #fff;
+    border: 1px solid var(--line);
+    padding: 20px 24px;
+    font-family: "SF Mono", Menlo, monospace;
+    font-size: 12px; line-height: 1.85;
+    white-space: pre; overflow-x: auto; color: var(--ink);
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>one.koplugin · 交互设计 v3</h1>
+  <div class="subtitle">按 KOReader 真机 UI（TitleBar + 下划线菜单 + 分页 footer + 黑白极简）重画。</div>
+  <div class="legend">v3 变更：（1）UI 全部按 KOReader Menu widget 真实样式重画（白底、粗横线、右侧 mandatory 灰字、底部 « ‹ Page 1/1 › » 分页条、选中反白）；（2）删除「合集封面样式 / 问题作为章标题 / 内嵌 CSS 样式」三项子设置。</div>
+
+  <div class="grid">
+
+    <!-- ============ 数据流 ============ -->
+    <div class="divider">1. 数据流</div>
+
+    <div class="flow">用户点击 [ 顶栏 › 工具 (Tools) › ONE · 一个 › 今日一期 ]
+      │
+      ▼
+1. GET wufazhuce.com/  → 今日 image_id / article_id / question_id
+2. 分别抓 /one /article /question 三个详情页
+3. 下载图片到 cache/one/img/&lt;hash&gt;.jpg
+4. 拼 EPUB (每期 1 本，3 章 TOC)
+   └ 落盘 koreader/settings/one/books/ONE-VOL.5022.epub
+5. ReaderUI:showReader(epub_path)
+      │
+      ▼
+[ KOReader 打开这本书，跳到第一章 ]</div>
+
+    <!-- ============ 菜单结构 ============ -->
+    <div class="divider">2. 菜单结构</div>
+
+    <div class="tree">Reader Top Menu (点顶部召唤)
+└─ 🔧 Tools 页
+   └─ ONE · 一个 ▸
+      ├─ 今日一期                     → 抓取并打开 EPUB
+      ├─ 最近 7 天 ▸                  Jul 1 – Jul 7
+      ├─ 按日期查看 ▸
+      │  ├─ 昨天 / 上周今天 / 一个月前 / 一年前
+      │  ├─ 输入日期…                 (DateTimeWidget)
+      │  └─ 按日期区间…               (双 DateTime → 合集 EPUB)
+      ├─ 已缓存内容                   128
+      ├─ ─────────────
+      └─ 设置 ▸
+         ├─ 内容设置 ▸
+         │  ├─ 打开插件时默认           今日一期
+         │  └─ 图片质量                 中 (600x)
+         ├─ 缓存管理 ▸
+         │  ├─ 存储概况                 128 期 · 34 MB
+         │  ├─ 图片缓存上限             200 MB
+         │  ├─ 启动时自动清理           ☑
+         │  ├─ 清理阈值                 30 天前
+         │  ├─ 上次自动清理             今天 09:12
+         │  ├─ 立即执行一次
+         │  └─ 手动清理 ▸
+         │     ├─ 清空图片缓存           34 MB
+         │     ├─ 清空生成的 EPUB        128 本
+         │     └─ 清空全部（含 JSON）
+         └─ 关于 ▸
+            ├─ 版本                     v0.1.0
+            ├─ 数据来源                 wufazhuce.com
+            └─ 项目主页 / 反馈</div>
+
+    <!-- ============ 屏幕原型 ============ -->
+    <div class="divider">3. 界面原型（KOReader 真机风格 · e-ink 竖屏）</div>
+
+    <!-- (1) KOReader top menu 召唤 Tools tab -->
+    <div>
+      <div class="device">
+        <div class="label">01 · KOReader 顶栏 · Tools tab</div>
+        <div class="screen">
+          <!-- 隐约背景：书本正文 -->
+          <div class="reader" style="opacity: 0.15;">
+            <div class="r-h1">女杀手有一件事</div>
+            <div class="r-body"><p>这是一篇关于"归处"的小说……</p></div>
+          </div>
+          <!-- 顶部召唤菜单 -->
+          <div class="kb-topmenu">
+            <div class="kb-tabs">
+              <div class="tab">≡</div>
+              <div class="tab">Aa</div>
+              <div class="tab">⚙</div>
+              <div class="tab active">🔧</div>
+              <div class="tab">🔍</div>
+              <div class="tab">📁</div>
+              <div class="tab">☰</div>
+            </div>
+            <div class="kb-list" style="max-height: 300px;">
+              <div class="kb-item"><span class="txt">Statistics</span><span class="arrow">›</span></div>
+              <div class="kb-item"><span class="txt">Screenshotter</span><span class="arrow">›</span></div>
+              <div class="kb-item sel"><span class="txt">ONE · 一个</span><span class="arrow">›</span></div>
+              <div class="kb-item"><span class="txt">Wallabag</span><span class="arrow">›</span></div>
+              <div class="kb-item"><span class="txt">News downloader</span><span class="arrow">›</span></div>
+              <div class="kb-item"><span class="txt">More tools</span><span class="arrow">›</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="caption">点屏幕顶部 1/3 唤出 KOReader top menu；<b>ONE · 一个</b> 挂在 Tools tab（第 4 个 tab，扳手图标）。</div>
+    </div>
+
+    <!-- (2) ONE 主菜单 -->
+    <div>
+      <div class="device">
+        <div class="label">02 · ONE 主菜单</div>
+        <div class="screen">
+          <div class="kb-title">
+            <span class="l">‹</span>
+            <span class="t">ONE · 一个</span>
+            <span class="r">✕</span>
+          </div>
+          <div class="kb-list">
+            <div class="kb-item sel"><span class="txt">今日一期</span><span class="mand">VOL.5022 ›</span></div>
+            <div class="kb-item"><span class="txt">最近 7 天</span><span class="mand">Jul 1 – Jul 7 ›</span></div>
+            <div class="kb-item"><span class="txt">按日期查看</span><span class="arrow">›</span></div>
+            <div class="kb-item"><span class="txt">已缓存内容</span><span class="mand">128 ›</span></div>
+            <div class="kb-item"><span class="txt">设置</span><span class="arrow">›</span></div>
+          </div>
+          <div class="kb-page">
+            <span class="p">«</span><span class="p">‹</span>
+            <span class="center">Page 1 of 1</span>
+            <span class="p">›</span><span class="p">»</span>
+          </div>
+        </div>
+      </div>
+      <div class="caption">KOReader Menu widget 标准模板：顶部 TitleBar（‹/标题/✕）+ 白底列表（下划线分隔）+ 底部分页条。选中项黑底反白，右侧 mandatory 灰字。</div>
+    </div>
+
+    <!-- (3) 最近 7 天 -->
+    <div>
+      <div class="device">
+        <div class="label">03 · 最近 7 天</div>
+        <div class="screen">
+          <div class="kb-title">
+            <span class="l">‹</span>
+            <span class="t">最近 7 天</span>
+            <span class="r">✕</span>
+          </div>
+          <div class="kb-sub">Jul 1 – Jul 7 · 2026</div>
+          <div class="kb-list">
+            <div class="kb-item"><span class="txt">VOL.5022 · 周二</span><span class="mand">离 · 已读</span></div>
+            <div class="kb-item"><span class="txt">VOL.5021 · 周一</span><span class="mand">离</span></div>
+            <div class="kb-item sel"><span class="txt">VOL.5020 · 周日</span><span class="mand">下载</span></div>
+            <div class="kb-item"><span class="txt">VOL.5019 · 周六</span><span class="mand">下载</span></div>
+            <div class="kb-item"><span class="txt">VOL.5018 · 周五</span><span class="mand">下载</span></div>
+            <div class="kb-item"><span class="txt">VOL.5017 · 周四</span><span class="mand">下载</span></div>
+            <div class="kb-item"><span class="txt">VOL.5016 · 周三</span><span class="mand">下载</span></div>
+            <div class="kb-item"><span class="txt">▶ 把这 7 期合成一本合集</span><span class="arrow">›</span></div>
+          </div>
+          <div class="kb-page">
+            <span class="p">«</span><span class="p">‹</span>
+            <span class="center">Page 1 of 1</span>
+            <span class="p">›</span><span class="p">»</span>
+          </div>
+        </div>
+      </div>
+      <div class="caption">带副标题的菜单（KOReader FM-style TitleBar）。mandatory 显示状态：<code>离</code> = 已缓存 EPUB / <code>已读</code> = 阅读进度非 0 / <code>下载</code> = 待抓取。</div>
+    </div>
+
+    <!-- (4) 按日期查看 -->
+    <div>
+      <div class="device">
+        <div class="label">04 · 按日期查看</div>
+        <div class="screen">
+          <div class="kb-title">
+            <span class="l">‹</span>
+            <span class="t">按日期查看</span>
+            <span class="r">✕</span>
+          </div>
+          <div class="kb-list">
+            <div class="kb-item"><span class="txt">昨天</span><span class="mand">Jul 6</span></div>
+            <div class="kb-item"><span class="txt">上周今天</span><span class="mand">Jun 30</span></div>
+            <div class="kb-item"><span class="txt">一个月前</span><span class="mand">Jun 7</span></div>
+            <div class="kb-item"><span class="txt">一年前</span><span class="mand">2025-07-07</span></div>
+            <div class="kb-item sel"><span class="txt">输入日期…</span><span class="arrow">›</span></div>
+            <div class="kb-item"><span class="txt">按日期区间…</span><span class="arrow">›</span></div>
+          </div>
+          <div class="kb-page">
+            <span class="p">«</span><span class="p">‹</span>
+            <span class="center">Page 1 of 1</span>
+            <span class="p">›</span><span class="p">»</span>
+          </div>
+        </div>
+      </div>
+      <div class="caption">"输入日期…" 触发 <code>DateTimeWidget</code>；"按日期区间…" 触发双 DateTime 后弹合成方式对话框。</div>
+    </div>
+
+    <!-- (5) DateTimeWidget -->
+    <div>
+      <div class="device">
+        <div class="label">05 · DateTimeWidget · 输入日期</div>
+        <div class="screen">
+          <div class="reader" style="opacity: 0.15;">
+            <div class="r-h1">按日期查看</div>
+          </div>
+          <div class="kb-dialog-shadow">
+            <div class="kb-dialog">
+              <div class="head">选择日期</div>
+              <div class="body">
+                <div class="kb-spin">
+                  <div class="col"><div class="up">▲</div><div class="v">2026</div><div class="dn">▼</div></div>
+                  <div class="col"><div class="up">▲</div><div class="v">07</div><div class="dn">▼</div></div>
+                  <div class="col"><div class="up">▲</div><div class="v">07</div><div class="dn">▼</div></div>
+                </div>
+                <div style="text-align:center; font-size: 11px; color: #555; padding-bottom: 12px;">
+                  年 &nbsp; 月 &nbsp; 日
+                </div>
+              </div>
+              <div class="actions">
+                <div class="btn">取消</div>
+                <div class="btn primary">确定</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="caption">KOReader 内置 <code>DateTimeWidget</code>，三列 spinner 上下箭头调整。</div>
+    </div>
+
+    <!-- (6) 抓取进度 InfoMessage -->
+    <div>
+      <div class="device">
+        <div class="label">06 · 抓取进度</div>
+        <div class="screen">
+          <div class="reader" style="opacity: 0.15;">
+            <div class="r-h1">ONE · 一个</div>
+          </div>
+          <div class="kb-info">
+            <div class="icon">⟳</div>
+            <div>正在获取 VOL.5022</div>
+            <div class="sub">下载图片 · 2 / 3</div>
+            <div class="bar"><div style="width:66%;"></div></div>
+            <div class="sub" style="margin-top: 16px;">
+              首次打开约 5~10 秒<br>
+              下次进入直接从缓存打开
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="caption"><code>Trapper:info()</code> 非阻塞覆盖层，可被下一次 info 覆盖或点空白关闭。</div>
+    </div>
+
+    <!-- (7) EPUB 封面 -->
+    <div>
+      <div class="device">
+        <div class="label">07 · EPUB 打开：封面页</div>
+        <div class="screen">
+          <div class="reader">
+            <div class="r-cover">
+              <div class="big">VOL</div>
+              <div class="sm">5022</div>
+            </div>
+            <div class="r-title-book">ONE · 一个</div>
+            <div class="r-sub-book">2026 年 7 月 7 日 · 周二</div>
+            <div style="text-align:center; font-size: 11px; color: #555; margin-top: 20px; line-height: 1.8;">
+              韩寒主编 · 亭林镇工作室<br>
+              wufazhuce.com
+            </div>
+          </div>
+          <div class="kb-status"><span>ONE VOL.5022 · 封面</span><span>0%   1 / 12</span></div>
+        </div>
+      </div>
+      <div class="caption">EPUB 封面页。左右轻扫翻页，中间轻点召唤 KOReader 顶部菜单。</div>
+    </div>
+
+    <!-- (8) TOC -->
+    <div>
+      <div class="device">
+        <div class="label">08 · 目录（KOReader 内建 TOC）</div>
+        <div class="screen">
+          <div class="kb-title">
+            <span class="l">‹</span>
+            <span class="t">Table of Contents</span>
+            <span class="r">✕</span>
+          </div>
+          <div class="kb-sub">ONE VOL.5022</div>
+          <div class="kb-list">
+            <div class="kb-item sel"><span class="txt">1. 图文 · 摄影</span><span class="mand">2</span></div>
+            <div class="kb-item"><span class="txt">2. 文章 · 女杀手有一件事</span><span class="mand">4</span></div>
+            <div class="kb-item"><span class="txt">3. 问答 · 囤积癖会摧毁日常生活吗？</span><span class="mand">9</span></div>
+          </div>
+          <div class="kb-page">
+            <span class="p">«</span><span class="p">‹</span>
+            <span class="center">Page 1 of 1</span>
+            <span class="p">›</span><span class="p">»</span>
+          </div>
+        </div>
+      </div>
+      <div class="caption">crengine 生成的 TOC。三章 = 图文 / 文章 / 问答。</div>
+    </div>
+
+    <!-- (9) 图文章 -->
+    <div>
+      <div class="device">
+        <div class="label">09 · 章 1 · 图文</div>
+        <div class="screen">
+          <div class="reader">
+            <div class="r-h1">图文</div>
+            <div class="r-author">VOL.5022 · 2026-07-07</div>
+            <div class="r-img"></div>
+            <div class="r-cite">如果你把无知隐藏起来，没人可以伤害你，但你也学不到任何东西。</div>
+          </div>
+          <div class="kb-status"><span>第 1 章 · 图文</span><span>18%   2 / 12</span></div>
+        </div>
+      </div>
+      <div class="caption">图 + 一句话。若图片下载失败会显示占位框 + 图片说明。</div>
+    </div>
+
+    <!-- (10) 文章章节 -->
+    <div>
+      <div class="device">
+        <div class="label">10 · 章 2 · 文章</div>
+        <div class="screen">
+          <div class="reader">
+            <div class="r-h1">女杀手有一件事</div>
+            <div class="r-author">作者 / 蓝天雨</div>
+            <div class="r-quote">冷尸横陈，血已是死血。</div>
+            <div class="r-body">
+              <p>这是一篇关于"归处"的小说，也是一个杀手被自己的任务困在宿命闭环中的故事。</p>
+              <p>鱼身光泽呢喃，泛着少女粉晕。三月尾，好时令，鲷鱼在食客口中格外动听……</p>
+              <p>路莎是这间日料店的老板，剖鱼切片的花活，本不该留给她这样年轻的女人……</p>
+            </div>
+          </div>
+          <div class="kb-status"><span>第 2 章 · 文章</span><span>34%   4 / 12</span></div>
+        </div>
+      </div>
+      <div class="caption">crengine 排版，享受全套字体/字号/夜间/朗读/词典/高亮/笔记。</div>
+    </div>
+
+    <!-- (11) 问答 -->
+    <div>
+      <div class="device">
+        <div class="label">11 · 章 3 · 问答</div>
+        <div class="screen">
+          <div class="reader">
+            <div class="r-h1">囤积癖会摧毁日常生活吗？</div>
+            <div class="r-quote"><span class="r-q">Q</span> · 囤积癖会摧毁日常生活吗？</div>
+            <div class="r-body">
+              <p>答案是肯定的，囤积癖已经属于病症的一种……</p>
+              <p>以前我也只是听说，或在网络上见过，无非是房间内布满杂物、纸盒子、塑料桶、衣服、书籍……</p>
+            </div>
+            <div class="r-author" style="margin-top: 10px;">责任编辑：梅不谈</div>
+          </div>
+          <div class="kb-status"><span>第 3 章 · 问答</span><span>72%   9 / 12</span></div>
+        </div>
+      </div>
+      <div class="caption">问答同样用 crengine。Q 用引用块，A 直接续文。</div>
+    </div>
+
+    <!-- (12) 书内召唤菜单 · 上/下一期 -->
+    <div>
+      <div class="device">
+        <div class="label">12 · 书内菜单（挂 Dispatcher）</div>
+        <div class="screen">
+          <div class="reader" style="opacity: 0.2;">
+            <div class="r-h1">女杀手有一件事</div>
+            <div class="r-body"><p>路莎是这间日料店的老板……</p></div>
+          </div>
+          <div class="kb-topmenu">
+            <div class="kb-tabs">
+              <div class="tab">≡</div>
+              <div class="tab">Aa</div>
+              <div class="tab">⚙</div>
+              <div class="tab active">🔧</div>
+              <div class="tab">🔍</div>
+              <div class="tab">📁</div>
+              <div class="tab">☰</div>
+            </div>
+            <div class="kb-list">
+              <div class="kb-item"><span class="txt">Statistics</span><span class="arrow">›</span></div>
+              <div class="kb-item"><span class="txt">ONE · 一个</span><span class="arrow">›</span></div>
+              <div class="kb-item sel"><span class="txt">▷ 下一期 (VOL.5023)</span><span class="mand">未发布</span></div>
+              <div class="kb-item"><span class="txt">◁ 上一期 (VOL.5021)</span><span class="arrow">›</span></div>
+              <div class="kb-item"><span class="txt">⇤ 返回 ONE 主菜单</span><span class="arrow">›</span></div>
+              <div class="kb-item"><span class="txt">More tools</span><span class="arrow">›</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="caption">通过 <code>Dispatcher:registerAction()</code> 注册 <b>上/下一期</b> 动作，可绑定手势/键位；触发时关书重开相邻 VOL 的 EPUB。</div>
+    </div>
+
+    <!-- (13) 日期区间弹窗 -->
+    <div>
+      <div class="device">
+        <div class="label">13 · 日期区间选择</div>
+        <div class="screen">
+          <div class="reader" style="opacity: 0.15;">
+            <div class="r-h1">按日期区间</div>
+          </div>
+          <div class="kb-dialog-shadow">
+            <div class="kb-dialog">
+              <div class="head">选择日期范围</div>
+              <div class="body">
+                <div class="kb-item" style="border-bottom: 1px solid #000;"><span class="txt">起始日期</span><span class="mand">2026-07-01 ›</span></div>
+                <div class="kb-item" style="border-bottom: 1px solid #000;"><span class="txt">结束日期</span><span class="mand">2026-07-07 ›</span></div>
+                <div class="kb-item" style="border-bottom: 1px solid #000;"><span class="txt">合成方式</span><span class="mand">一本 7 章合集 ▾</span></div>
+                <div style="padding: 10px 14px; font-size: 11px; color: #555; border-bottom: 2px solid #000; line-height: 1.6;">
+                  将下载 <b>7 期</b> × 3 类内容 (~2 MB)。<br>预计耗时约 15 秒。
+                </div>
+              </div>
+              <div class="actions">
+                <div class="btn">取消</div>
+                <div class="btn primary">下载并生成</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="caption">"合成方式"两选：<b>一本 N 章合集</b> / <b>N 本独立 EPUB</b>。</div>
+    </div>
+
+    <!-- (14) 合集 TOC -->
+    <div>
+      <div class="device">
+        <div class="label">14 · 合集 EPUB · 目录（两级）</div>
+        <div class="screen">
+          <div class="kb-title">
+            <span class="l">‹</span>
+            <span class="t">Table of Contents</span>
+            <span class="r">✕</span>
+          </div>
+          <div class="kb-sub">ONE 合集 · Jul 1 – Jul 7</div>
+          <div class="kb-list">
+            <div class="kb-item"><span class="txt">▾ VOL.5022 · Jul 7</span><span class="mand">2</span></div>
+            <div class="kb-item"><span class="txt" style="padding-left: 20px;">├ 图文</span><span class="mand">2</span></div>
+            <div class="kb-item"><span class="txt" style="padding-left: 20px;">├ 文章 · 女杀手有一件事</span><span class="mand">4</span></div>
+            <div class="kb-item"><span class="txt" style="padding-left: 20px;">└ 问答 · 囤积癖</span><span class="mand">9</span></div>
+            <div class="kb-item"><span class="txt">▾ VOL.5021 · Jul 6</span><span class="mand">13</span></div>
+            <div class="kb-item sel"><span class="txt" style="padding-left: 20px;">├ 图文</span><span class="mand">13</span></div>
+            <div class="kb-item"><span class="txt" style="padding-left: 20px;">├ 文章 · 追风</span><span class="mand">16</span></div>
+            <div class="kb-item"><span class="txt" style="padding-left: 20px;">└ 问答 · 简历焦虑</span><span class="mand">20</span></div>
+          </div>
+          <div class="kb-page">
+            <span class="p">«</span><span class="p">‹</span>
+            <span class="center">Page 1 of 2</span>
+            <span class="p">›</span><span class="p">»</span>
+          </div>
+        </div>
+      </div>
+      <div class="caption">合集 EPUB 用两级 TOC：VOL/日期 → 图文/文章/问答。</div>
+    </div>
+
+    <!-- (15) 已缓存内容（KOReader History-style） -->
+    <div>
+      <div class="device">
+        <div class="label">15 · 已缓存内容</div>
+        <div class="screen">
+          <div class="kb-title">
+            <span class="l">‹</span>
+            <span class="t">已缓存内容</span>
+            <span class="r">✕</span>
+          </div>
+          <div class="kb-sub">128 期 · 34 MB</div>
+          <div class="kb-list">
+            <div class="kb-item"><span class="txt">VOL.5022 · Jul 7</span><span class="mand">今日 · 已读</span></div>
+            <div class="kb-item"><span class="txt">VOL.5021 · Jul 6</span><span class="mand">1 天前</span></div>
+            <div class="kb-item sel"><span class="txt">合集 · Jul 1 – Jul 7</span><span class="mand">7 章</span></div>
+            <div class="kb-item"><span class="txt">VOL.5020 · Jul 5</span><span class="mand">2 天前</span></div>
+            <div class="kb-item"><span class="txt">VOL.4876 · Feb 11</span><span class="mand">146 天前</span></div>
+            <div class="kb-item"><span class="txt">VOL.4712 · 2025-08-30</span><span class="mand">311 天前</span></div>
+          </div>
+          <div class="kb-page">
+            <span class="p">«</span><span class="p">‹</span>
+            <span class="center">Page 1 of 22</span>
+            <span class="p">›</span><span class="p">»</span>
+          </div>
+        </div>
+      </div>
+      <div class="caption">仿 KOReader History widget。点条目 → <code>ReaderUI:showReader()</code>，无网络也能读。长按删除单期。</div>
+    </div>
+
+    <!-- (16) 设置总入口 -->
+    <div>
+      <div class="device">
+        <div class="label">16 · 设置总入口</div>
+        <div class="screen">
+          <div class="kb-title">
+            <span class="l">‹</span>
+            <span class="t">设置</span>
+            <span class="r">✕</span>
+          </div>
+          <div class="kb-list">
+            <div class="kb-item sel"><span class="txt">内容设置</span><span class="arrow">›</span></div>
+            <div class="kb-item"><span class="txt">缓存管理</span><span class="mand">34 MB ›</span></div>
+            <div class="kb-item"><span class="txt">关于</span><span class="mand">v0.1.0 ›</span></div>
+          </div>
+          <div class="kb-page">
+            <span class="p">«</span><span class="p">‹</span>
+            <span class="center">Page 1 of 1</span>
+            <span class="p">›</span><span class="p">»</span>
+          </div>
+        </div>
+      </div>
+      <div class="caption">极简三条。数字副标题让用户不点进去也能瞄一眼状态。</div>
+    </div>
+
+    <!-- (17) 内容设置 -->
+    <div>
+      <div class="device">
+        <div class="label">17 · 内容设置</div>
+        <div class="screen">
+          <div class="kb-title">
+            <span class="l">‹</span>
+            <span class="t">内容设置</span>
+            <span class="r">✕</span>
+          </div>
+          <div class="kb-list">
+            <div class="kb-item"><span class="txt">打开插件时默认</span><span class="mand">今日一期 ▾</span></div>
+            <div class="kb-item sel"><span class="txt">图片质量</span><span class="mand">中 (600x) ▾</span></div>
+          </div>
+          <div class="kb-page">
+            <span class="p">«</span><span class="p">‹</span>
+            <span class="center">Page 1 of 1</span>
+            <span class="p">›</span><span class="p">»</span>
+          </div>
+        </div>
+      </div>
+      <div class="caption">按用户要求删掉合集封面样式 / 问题作为章标题 / 内嵌 CSS 三项，只保留最必要的两条。</div>
+    </div>
+
+    <!-- (18) 缓存管理 -->
+    <div>
+      <div class="device">
+        <div class="label">18 · 缓存管理</div>
+        <div class="screen">
+          <div class="kb-title">
+            <span class="l">‹</span>
+            <span class="t">缓存管理</span>
+            <span class="r">✕</span>
+          </div>
+          <div class="kb-sub">128 期 · 34 MB / 200 MB</div>
+          <div class="kb-list">
+            <div class="kb-item"><span class="txt">图片缓存上限</span><span class="mand">200 MB ▾</span></div>
+            <div class="kb-item"><span class="txt">启动时自动清理</span><span class="mand">☑</span></div>
+            <div class="kb-item sel"><span class="txt">清理阈值</span><span class="mand">30 天前 ▾</span></div>
+            <div class="kb-item"><span class="txt">上次自动清理</span><span class="mand">今天 09:12</span></div>
+            <div class="kb-item"><span class="txt">立即执行一次</span><span class="arrow">›</span></div>
+            <div class="kb-item"><span class="txt">手动清理…</span><span class="arrow">›</span></div>
+          </div>
+          <div class="kb-page">
+            <span class="p">«</span><span class="p">‹</span>
+            <span class="center">Page 1 of 1</span>
+            <span class="p">›</span><span class="p">»</span>
+          </div>
+        </div>
+      </div>
+      <div class="caption">副标题一眼看容量占用。启动自动清理 = 每次进插件时删 X 天前的图片和 EPUB，JSON 保留可离线重建。</div>
+    </div>
+
+    <!-- (19) 清理阈值 ButtonDialog -->
+    <div>
+      <div class="device">
+        <div class="label">19 · 清理阈值选择</div>
+        <div class="screen">
+          <div class="kb-title">
+            <span class="l">‹</span>
+            <span class="t">缓存管理</span>
+            <span class="r">✕</span>
+          </div>
+          <div class="kb-list" style="opacity: 0.3;">
+            <div class="kb-item"><span class="txt">图片缓存上限</span><span class="mand">200 MB ▾</span></div>
+            <div class="kb-item"><span class="txt">启动时自动清理</span><span class="mand">☑</span></div>
+          </div>
+          <div class="kb-dialog-shadow">
+            <div class="kb-dialog">
+              <div class="head">保留最近多久的缓存？</div>
+              <div class="body">
+                <div class="row"><span class="k">7 天</span><span class="v"></span></div>
+                <div class="row"><span class="k">15 天</span><span class="v"></span></div>
+                <div class="row sel"><span class="k">30 天</span><span class="v">● 当前</span></div>
+                <div class="row"><span class="k">60 天</span><span class="v"></span></div>
+                <div class="row"><span class="k">90 天</span><span class="v"></span></div>
+                <div class="row"><span class="k">180 天</span><span class="v"></span></div>
+                <div class="row"><span class="k">自定义天数…</span><span class="v">›</span></div>
+                <div class="row"><span class="k">从不清理</span><span class="v"></span></div>
+              </div>
+              <div class="actions">
+                <div class="btn">取消</div>
+                <div class="btn primary">确定</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="caption">KOReader <code>ButtonDialog</code>：预设 6 档 + 自定义天数（→ SpinWidget） + 从不清理。</div>
+    </div>
+
+    <!-- (20) 手动清理 -->
+    <div>
+      <div class="device">
+        <div class="label">20 · 手动清理</div>
+        <div class="screen">
+          <div class="kb-title">
+            <span class="l">‹</span>
+            <span class="t">手动清理</span>
+            <span class="r">✕</span>
+          </div>
+          <div class="kb-list">
+            <div class="kb-item"><span class="txt">清空图片缓存</span><span class="mand">34 MB ›</span></div>
+            <div class="kb-item sel"><span class="txt">清空生成的 EPUB</span><span class="mand">128 本 ›</span></div>
+            <div class="kb-item"><span class="txt">清空全部（含 JSON）</span><span class="arrow">›</span></div>
+          </div>
+          <div class="kb-page">
+            <span class="p">«</span><span class="p">‹</span>
+            <span class="center">Page 1 of 1</span>
+            <span class="p">›</span><span class="p">»</span>
+          </div>
+        </div>
+      </div>
+      <div class="caption">三档手动清理。每档点后走 <code>ConfirmBox</code> 二次确认。</div>
+    </div>
+
+    <!-- (21) 自动清理结果 Notification -->
+    <div>
+      <div class="device">
+        <div class="label">21 · 启动自动清理结果</div>
+        <div class="screen">
+          <div class="reader" style="opacity: 0.2;">
+            <div class="r-h1">ONE · 一个</div>
+            <div class="r-body"><p>正在加载今日一期……</p></div>
+          </div>
+          <div class="kb-toast">
+            已清理 30 天前缓存<br>
+            <span style="color:#ccc; font-size: 11px;">删除 42 张图片 · 38 本 EPUB · 释放 20 MB</span>
+          </div>
+        </div>
+      </div>
+      <div class="caption">KOReader <code>Notification:notify()</code> 非阻塞 toast，1~2 秒消失。若无可清内容则完全静默。</div>
+    </div>
+
+    <!-- (22) 关于 -->
+    <div>
+      <div class="device">
+        <div class="label">22 · 关于</div>
+        <div class="screen">
+          <div class="kb-title">
+            <span class="l">‹</span>
+            <span class="t">关于</span>
+            <span class="r">✕</span>
+          </div>
+          <div class="kb-list">
+            <div class="kb-item"><span class="txt">版本</span><span class="mand">v0.1.0</span></div>
+            <div class="kb-item"><span class="txt">数据来源</span><span class="mand">wufazhuce.com</span></div>
+            <div class="kb-item"><span class="txt">项目主页</span><span class="arrow">›</span></div>
+            <div class="kb-item sel"><span class="txt">问题反馈</span><span class="arrow">›</span></div>
+            <div class="kb-item"><span class="txt">许可</span><span class="mand">MIT</span></div>
+          </div>
+          <div class="kb-page">
+            <span class="p">«</span><span class="p">‹</span>
+            <span class="center">Page 1 of 1</span>
+            <span class="p">›</span><span class="p">»</span>
+          </div>
+        </div>
+      </div>
+      <div class="caption">项目主页 = GitHub repo；问题反馈 = GitHub issues；点这些项弹二维码 InfoMessage（e-reader 不便直接跳外链）。</div>
+    </div>
+
+  </div>
+
+  <!-- 说明 -->
+  <div class="grid">
+    <div class="divider">4. 关键实现要点</div>
+    <div class="spec-list">
+      <h3>UI 组件对应关系（Lua 代码怎么写）</h3>
+      <ul>
+        <li>屏 02/03/04/16/17/18/20/22 = <code>Menu:new{ items = {...}, title, subtitle }</code></li>
+        <li>屏 05 = <code>DateTimeWidget:new{ ... }</code></li>
+        <li>屏 06 = <code>Trapper:info("正在获取 VOL.5022...")</code></li>
+        <li>屏 08/14 = crengine 自动生成的 TOC，读取 EPUB 内 <code>nav.xhtml</code></li>
+        <li>屏 13/19 = <code>ButtonDialog</code> / <code>MultiConfirmBox</code></li>
+        <li>屏 21 = <code>Notification:notify(text, timeout)</code></li>
+        <li>屏 12（书内菜单）= 挂载到 <code>ReaderMenu</code> 的 tools 分组 + <code>Dispatcher:registerAction("one_next_issue")</code></li>
+      </ul>
+
+      <h3>为什么走 EPUB 而不是 HTML/TextViewer</h3>
+      <ul>
+        <li>用户想要 KOReader 全套阅读能力：字体/字号/夜间/朗读/词典/高亮/笔记/阅读进度/KOSync</li>
+        <li>每期一本书 → 自然进书架，KOReader 原生列表 & 搜索直接就用</li>
+        <li>EPUB 内可以有 TOC（NCX + nav.xhtml），图文/文章/问答各占一章</li>
+        <li>合集 = 多期打包成一本书，同样机制</li>
+      </ul>
+
+      <h3>EPUB 拼装（每期 1 本）</h3>
+      <ul>
+        <li>文件结构：<code>mimetype</code> + <code>META-INF/container.xml</code> + <code>OEBPS/content.opf</code> + <code>OEBPS/toc.ncx</code> + <code>OEBPS/nav.xhtml</code> + 3 个 <code>chapter*.xhtml</code> + <code>images/cover.jpg</code> + <code>images/one.jpg</code>（图文大图）+ <code>images/*.jpg</code>（文章问答内嵌图）</li>
+        <li>Lua 打包用 <code>ffi/zlib</code> + 自实现 <code>ZipWriter</code>（mimetype 必须首个且 STORE 无压缩）</li>
+        <li>metadata：<code>dc:title</code>="ONE VOL.5022 · 2026-07-07"、<code>dc:creator</code>="ONE 一个"、<code>dc:date</code>=发布日期 → KOReader 书架按此排序</li>
+        <li>产物落盘 <code>koreader/settings/one/books/ONE-VOL.5022.epub</code></li>
+      </ul>
+
+      <h3>EPUB 拼装（N 期合集）</h3>
+      <ul>
+        <li>N 期 × 3 章 = 3N 章。TOC 两级：一级 VOL/日期，二级 图文/文章/问答</li>
+        <li>book title = "ONE 合集 · 2026-07-01 – 2026-07-07"</li>
+        <li>封面 = 起始日期图文的封面图</li>
+      </ul>
+
+      <h3>菜单与阅读器的联动</h3>
+      <ul>
+        <li>ONE 菜单挂在 <code>ReaderMenu / FileManagerMenu</code> 的 tools 分组（书内/书架都能进）</li>
+        <li>用 <code>ReaderUI:showReader(epub)</code> 打开 EPUB；当前若已有书打开，KOReader 自动关闭切换</li>
+        <li><code>Dispatcher:registerAction("one_prev_issue" / "one_next_issue")</code>，用户可绑定手势/键位</li>
+      </ul>
+
+      <h3>缓存策略</h3>
+      <ul>
+        <li>v3 JSON API 的详情响应存 <code>cache/one/&lt;type&gt;_&lt;id&gt;.json</code>（永久）</li>
+        <li>图片存 <code>cache/one/img/&lt;hash&gt;.jpg</code>（LRU 200MB）</li>
+        <li>生成的 EPUB 存 <code>settings/one/books/</code>（可手动删）</li>
+        <li>重开同一期若 EPUB 已存在，直接 ReaderUI 跳过重建</li>
+        <li>启动自动清理：删 X 天前访问过的 img + EPUB，JSON 保留可离线重建</li>
+      </ul>
+
+      <h3>不做的功能（首版）</h3>
+      <ul>
+        <li>评论：网站评论是第三方 JS 挂件，HTML 拿不到</li>
+        <li>音乐 / 电台 / 电影：ONE 网页版没有，只 App 独占</li>
+        <li>历史文章 / 问答按日期精确查：文章页缺日期字段，暂只支持"今日跟随首页 3 元组"</li>
+      </ul>
+    </div>
+  </div>
+
+</div>
+</body>
+</html>
