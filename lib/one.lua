@@ -182,6 +182,24 @@ function One.load_issue(settings, image_id)
     return issue
 end
 
+-- Load an issue's metadata from the issue.lua next to its EPUB. Used by the
+-- parent process to recover the issue object (for adjacent-issue navigation)
+-- after a subprocess fetch that only returns the EPUB path. Returns nil for
+-- collection EPUBs (no per-issue metadata).
+function One.load_issue_by_path(path)
+    local dir = tostring(path or ""):match("^(.*)/[^/]+$")
+    if not dir then
+        return nil
+    end
+    local meta = dir .. "/issue.lua"
+    if not file_exists(meta) then
+        return nil
+    end
+    local ok, chunk = pcall(loadfile, meta)
+    local issue = ok and chunk and select(2, pcall(chunk)) or nil
+    return type(issue) == "table" and issue or nil
+end
+
 -- Rebuild the cached-issue index from disk truth. Each issue folder is
 -- self-consistent (its name and issue.lua share one iso_date), but the settings
 -- index can drift when a bad date resolution overwrote an image_id entry. Walking

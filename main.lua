@@ -156,57 +156,6 @@ function OnePlugin:showInfo(text)
     UIManager:show(InfoMessage:new{ text = text })
 end
 
--- Progress box that doubles as a Cancel button. Each update replaces the previous
--- InfoMessage; tapping it sets a cancel flag. Because our network calls block the
--- Lua VM, we yield to the UI loop after showing (so a pending tap gets processed)
--- and resume on the next tick -- giving cancellation at every progress step, i.e.
--- within one request (bounded by the socket timeout). Must run in the task
--- coroutine that runOnlineTask sets up.
-function OnePlugin:info(text)
-    self:closeProgress()
-    self._progress = InfoMessage:new{
-        text = text .. "\n\n" .. _("Tap to cancel"),
-        dismiss_callback = function()
-            if not self._closing_progress then
-                self._cancelled = true
-            end
-        end,
-    }
-    UIManager:show(self._progress)
-    UIManager:forceRePaint()
-    local co = self._task_co
-    if co and coroutine.running() == co then
-        UIManager:nextTick(function()
-            if coroutine.status(co) == "suspended" then
-                coroutine.resume(co)
-            end
-        end)
-        coroutine.yield()
-    end
-end
-
-function OnePlugin:closeProgress()
-    if self._progress then
-        self._closing_progress = true
-        UIManager:close(self._progress)
-        self._closing_progress = false
-        self._progress = nil
-    end
-end
-
--- Kept for older call sites; progress is torn down by closeProgress now.
-function OnePlugin:clearInfo()
-    self:closeProgress()
-end
-
--- Abort the running task if the user tapped the progress box. Raises a tagged
--- error caught by runOnlineTask. Call between network steps.
-function OnePlugin:checkCancelled()
-    if self._cancelled then
-        error("ONE_CANCELLED")
-    end
-end
-
 function OnePlugin:isNetworkOnline()
     local ok, NetworkMgr = pcall(require, "ui/network/manager")
     if not ok or not NetworkMgr or not NetworkMgr.isOnline then
@@ -219,33 +168,174 @@ function OnePlugin:isNetworkOnline()
     return online == true
 end
 
--- Run a network task in a coroutine so progress can update (and be cancelled)
--- while the UI stays responsive, with uniform error handling. `action` may call
--- self:info() to show progress and self:checkCancelled() to honor a Cancel tap.
-function OnePlugin:runOnlineTask(label, action)
+-- Map a (stage, cur, total) progress tick to a display string. Runs in the child
+-- (to write the progress file) so it must not touch `self`.
+local function progress_text(stage, cur, total)
+    if stage == "index" then
+        return _("Locating date...")
+    elseif stage == "image" then
+        return _("Fetching image...")
+    elseif stage == "article" then
+        return _("Fetching article...")
+    elseif stage == "question" then
+        return _("Fetching question...")
+    elseif stage == "images" and total and total > 0 then
+        return T(_("Downloading images (%1/%2)..."), cur, total)
+    elseif stage == "collect" and total then
+        return T(_("Fetching %1/%2..."), cur, total)
+    elseif stage == "build" then
+        return _("Building EPUB...")
+    end
+    return _("Please wait...")
+end
+
+-- Run a network fetch with a working Cancel button AND live progress.
+--
+-- KOReader's socket I/O blocks the whole Lua VM, so a stuck request freezes the
+-- UI and no in-process "cancel" tap can ever be handled. The only reliable way
+-- to interrupt it is to run the work in a subprocess and kill it. We fork `job`
+-- (modelled on Trapper:dismissableRunInSubprocess), poll it from the UI-alive
+-- parent, and terminate the child if the user taps the progress box. The child
+-- reports progress by writing a small file that the parent reads each tick and
+-- shows in a normal centered InfoMessage.
+--
+--   job(progress)  runs in the CHILD. Calls progress(stage, cur, total) for UI
+--                  updates and returns the result EPUB path as a string ("" =
+--                  nothing found). Touches disk/network only -- never the UI.
+--   on_done(path)  runs in the PARENT after success, with the returned path.
+function OnePlugin:runFetch(label, busy_text, job, on_done)
     if not self:isNetworkOnline() then
         self:showInfo(T(_("%1 failed:\n%2"), label,
             _("No network connection. Please connect Wi-Fi and try again.")))
         return
     end
-    self._cancelled = false
-    local co
-    co = coroutine.create(function()
-        local ok, err = xpcall(action, debug.traceback)
-        self:closeProgress()
-        self._task_co = nil
-        if not ok then
-            if tostring(err):find("ONE_CANCELLED", 1, true) then
-                logger.info(LOG_MODULE, "task cancelled:", label)
+    local ffiutil = require("ffi/util")
+    local progress_path = self.settings.cache_dir .. "/.one_progress"
+    os.remove(progress_path)
+
+    local co, cancelled, widget, current_text
+
+    -- Show/refresh the progress box. Recreated only when the text changes (so
+    -- e-ink refreshes match progress steps, as before). Tapping it cancels.
+    local function set_text(text)
+        if not text or text == "" then text = busy_text end
+        if text == current_text and widget then
+            return
+        end
+        current_text = text
+        local new = InfoMessage:new{
+            text = text .. "\n\n" .. _("Tap to cancel"),
+            dismiss_callback = function() coroutine.resume(co, false) end,
+        }
+        UIManager:show(new)
+        if widget then
+            widget.dismiss_callback = nil
+            UIManager:close(widget)
+        end
+        widget = new
+        UIManager:forceRePaint()
+    end
+
+    local function reap(pid, read_fd)
+        local collect
+        collect = function()
+            if read_fd and ffiutil.getNonBlockingReadSize(read_fd) ~= 0 then
+                ffiutil.readAllFromFD(read_fd) -- unblock child's write() so it can exit
+                read_fd = nil
+            end
+            if ffiutil.isSubProcessDone(pid) then
+                if read_fd then ffiutil.readAllFromFD(read_fd) end
             else
-                logger.err(LOG_MODULE, "task failed:", label, log_error(err))
-                self:showInfo(T(_("%1 failed:\n%2"), label, self:friendlyError(err)))
+                UIManager:scheduleIn(1, collect)
             end
         end
+        UIManager:scheduleIn(1, collect)
+    end
+
+    co = coroutine.create(function()
+        set_text(busy_text)
+        local pid, read_fd = ffiutil.runInSubProcess(function(_pid, write_fd)
+            local function progress(stage, cur, total)
+                local tmp = progress_path .. ".tmp"
+                local f = io.open(tmp, "w")
+                if f then
+                    f:write(progress_text(stage, cur, total))
+                    f:close()
+                    os.rename(tmp, progress_path) -- atomic: parent never reads a half file
+                end
+            end
+            local ok, res = xpcall(function() return job(progress) end, debug.traceback)
+            local out
+            if ok then
+                out = type(res) == "string" and res or ""
+            else
+                out = "ERR:" .. log_error(res)
+            end
+            ffiutil.writeToFD(write_fd, out, true)
+        end, true)
+
+        local result
+        if not pid then
+            -- No fork on this platform: run in-process (blocking, not cancelable).
+            local ok, res = xpcall(function() return job(function() end) end, debug.traceback)
+            result = ok and (type(res) == "string" and res or "") or ("ERR:" .. log_error(res))
+        else
+            while true do
+                local tick = function()
+                    if coroutine.status(co) == "suspended" then coroutine.resume(co, true) end
+                end
+                UIManager:scheduleIn(0.4, tick)
+                local go_on = coroutine.yield() -- resumed by tick (true) or a tap (false)
+                if not go_on then
+                    UIManager:unschedule(tick)
+                    cancelled = true
+                    ffiutil.terminateSubProcess(pid)
+                    reap(pid, read_fd)
+                    break
+                end
+                local done = ffiutil.isSubProcessDone(pid)
+                local ready = read_fd and ffiutil.getNonBlockingReadSize(read_fd) ~= 0
+                if done or ready then
+                    if read_fd then result = ffiutil.readAllFromFD(read_fd) end
+                    if not done then reap(pid, nil) end
+                    break
+                end
+                local f = io.open(progress_path, "r")
+                if f then
+                    local t = f:read("*a")
+                    f:close()
+                    set_text(t)
+                end
+            end
+        end
+
+        if widget then
+            widget.dismiss_callback = nil
+            UIManager:close(widget)
+            widget = nil
+        end
+        os.remove(progress_path)
+
+        if cancelled then
+            logger.info(LOG_MODULE, "fetch cancelled:", label)
+            return
+        end
+        result = result or ""
+        if result:sub(1, 4) == "ERR:" then
+            local err = result:sub(5)
+            logger.err(LOG_MODULE, "fetch failed:", label, err)
+            self:showInfo(T(_("%1 failed:\n%2"), label, self:friendlyError(err)))
+            return
+        end
+        if result == "" then
+            self:showInfo(_("No content."))
+            return
+        end
+        One.rebuild_cache_index(self.settings) -- pick up the child's cache writes
+        on_done(result)
     end)
-    self._task_co = co
-    -- Start on the next tick so the caller's menu can close and the first
-    -- progress box paints before any blocking request.
+
+    -- Start on the next tick so the triggering menu can close first.
     UIManager:nextTick(function() coroutine.resume(co) end)
 end
 
@@ -270,27 +360,6 @@ function OnePlugin:openFile(path)
     end
 end
 
--- Progress closure shared by fetch pipelines: maps stages to busy text.
-function OnePlugin:makeProgress(vol_hint)
-    local label = vol_hint and T(_("Fetching VOL.%1..."), vol_hint) or _("Please wait...")
-    return function(stage, cur, total)
-        self:checkCancelled()
-        if stage == "image" then
-            self:info(_("Fetching image..."))
-        elseif stage == "article" then
-            self:info(_("Fetching article..."))
-        elseif stage == "question" then
-            self:info(_("Fetching question..."))
-        elseif stage == "images" and total and total > 0 then
-            self:info(T(_("Downloading images (%1/%2)..."), cur, total))
-        elseif stage == "build" then
-            self:info(_("Building EPUB..."))
-        else
-            self:info(label)
-        end
-    end
-end
-
 -- ---------------------------------------------------------------------------
 -- Today
 -- ---------------------------------------------------------------------------
@@ -305,13 +374,12 @@ function OnePlugin:fetchTodayAndOpen()
         self:openFile(cached_path)
         return
     end
-    self:runOnlineTask(_("Today's issue"), function()
-        self:info(_("Fetching today's issue..."))
+    self:runFetch(_("Today's issue"), _("Fetching today's issue..."), function(progress)
         local ids = One.today_ids(self.client, self.settings)
-        local path, issue = One.prepare_issue(
-            self.client, self.settings, ids,
-            self.settings:get("content").image_quality, self:makeProgress())
-        self._current_issue = issue
+        return (One.prepare_issue(self.client, self.settings, ids,
+            self.settings:get("content").image_quality, progress))
+    end, function(path)
+        self._current_issue = One.load_issue_by_path(path)
         self:openFile(path)
     end)
 end
@@ -393,29 +461,26 @@ function OnePlugin:openRecentEntry(entry)
             return
         end
     end
-    self:runOnlineTask(_("Today's issue"), function()
-        self:info(_("Please wait..."))
-        local ids = One.ids_from_entry(self.client, self.settings, entry, self:makeProgress())
+    self:runFetch(_("Today's issue"), _("Please wait..."), function(progress)
+        local ids = One.ids_from_entry(self.client, self.settings, entry, progress)
         if not ids or not ids.image_id then
-            self:showInfo(_("No content."))
-            return
+            return ""
         end
-        local path, issue = One.prepare_issue(
-            self.client, self.settings, ids,
-            self.settings:get("content").image_quality, self:makeProgress())
-        self._current_issue = issue
+        return (One.prepare_issue(self.client, self.settings, ids,
+            self.settings:get("content").image_quality, progress))
+    end, function(path)
+        self._current_issue = One.load_issue_by_path(path)
         self:openFile(path)
     end)
 end
 
 -- Fetch (or reuse cache) a full issue and open it.
 function OnePlugin:openIssueByIds(ids)
-    self:runOnlineTask(_("Today's issue"), function()
-        self:info(_("Please wait..."))
-        local quality = self.settings:get("content").image_quality
-        local path, issue = One.prepare_issue(
-            self.client, self.settings, ids, quality, self:makeProgress())
-        self._current_issue = issue
+    self:runFetch(_("Today's issue"), _("Please wait..."), function(progress)
+        return (One.prepare_issue(self.client, self.settings, ids,
+            self.settings:get("content").image_quality, progress))
+    end, function(path)
+        self._current_issue = One.load_issue_by_path(path)
         self:openFile(path)
     end)
 end
@@ -486,25 +551,24 @@ function OnePlugin:openByDate(y, m, d)
     if not self:validateDate(y, m, d) then
         return
     end
-    self:runOnlineTask(_("Browse by date"), function()
-        self:info(_("Locating date..."))
+    -- Already cached for this date? Open it straight from disk, no network.
+    local iso = DateIndex.iso(y, m, d)
+    local cached_path, cached_issue = One.build_cached_by_date(self.settings, iso)
+    if cached_path then
+        self._current_issue = cached_issue
+        self:openFile(cached_path)
+        return
+    end
+    self:runFetch(_("Browse by date"), _("Locating date..."), function(progress)
         -- v3 gives full essay+question for a date; HTML fallback is image-only.
-        local ids = One.ids_for_date(self.client, self.settings, y, m, d, function(stage, cur, budget)
-            if stage == "index" then
-                self:info(_("Locating date..."))
-            elseif cur then
-                self:info(T(_("Fetching %1/%2..."), cur, budget))
-            end
-        end)
+        local ids = One.ids_for_date(self.client, self.settings, y, m, d, progress)
         if not ids or not ids.image_id then
-            self:clearInfo()
-            self:showInfo(_("Could not locate an issue for that date."))
-            return
+            return ""
         end
-        local quality = self.settings:get("content").image_quality
-        local path, issue = One.prepare_issue(
-            self.client, self.settings, ids, quality, self:makeProgress())
-        self._current_issue = issue
+        return (One.prepare_issue(self.client, self.settings, ids,
+            self.settings:get("content").image_quality, progress))
+    end, function(path)
+        self._current_issue = One.load_issue_by_path(path)
         self:openFile(path)
     end)
 end
@@ -553,14 +617,13 @@ function OnePlugin:confirmDateRange(start_t, end_t)
 end
 
 function OnePlugin:downloadDateRange(start_t, end_t, days)
-    self:runOnlineTask(_("Browse by date"), function()
+    self:runFetch(_("Browse by date"), T(_("Downloading %1 issues..."), days), function(progress)
         local quality = self.settings:get("content").image_quality
         local issues = {}
         local base = os.time({ year = start_t.year, month = start_t.month, day = start_t.day, hour = 12 })
         for i = 0, days - 1 do
+            progress("collect", i + 1, days)
             local dt = os.date("*t", base + i * 86400)
-            self:info(T(_("Fetching %1/%2..."), i + 1, days))
-            self:checkCancelled()
             local ids = One.ids_for_date(self.client, self.settings, dt.year, dt.month, dt.day)
             if ids and ids.image_id then
                 local issue = One.load_issue(self.settings, ids.image_id)
@@ -573,39 +636,38 @@ function OnePlugin:downloadDateRange(start_t, end_t, days)
             end
         end
         if #issues == 0 then
-            self:showInfo(_("Could not locate an issue for that date."))
-            return
+            return ""
         end
-        self:info(_("Building EPUB..."))
+        progress("build")
         local range_label = DateIndex.iso(start_t.year, start_t.month, start_t.day)
             .. " – " .. DateIndex.iso(end_t.year, end_t.month, end_t.day)
-        local path = One.build_collection(self.settings, issues, range_label)
+        return One.build_collection(self.settings, issues, range_label)
+    end, function(path)
         self:openFile(path)
     end)
 end
 
 -- Combine a list of recent entries into a collection EPUB.
 function OnePlugin:downloadCollection(entries, label)
-    self:runOnlineTask(_("Recent 7 days"), function()
+    self:runFetch(label, T(_("Downloading %1 issues..."), #entries), function(progress)
         local quality = self.settings:get("content").image_quality
         local issues = {}
         for i = 1, #entries do
-            self:info(T(_("Fetching %1/%2..."), i, #entries))
-            self:checkCancelled()
+            progress("collect", i, #entries)
             local ids = One.ids_from_entry(self.client, self.settings, entries[i])
             if ids and ids.image_id then
                 issues[#issues + 1] = One.fetch_issue(self.client, self.settings, ids, quality)
             end
         end
         if #issues == 0 then
-            self:showInfo(_("No content."))
-            return
+            return ""
         end
-        self:info(_("Building EPUB..."))
+        progress("build")
         local first = issues[1]
         local last = issues[#issues]
         local range_label = (last.iso_date or "") .. " – " .. (first.iso_date or "")
-        local path = One.build_collection(self.settings, issues, range_label)
+        return One.build_collection(self.settings, issues, range_label)
+    end, function(path)
         self:openFile(path)
     end)
 end
