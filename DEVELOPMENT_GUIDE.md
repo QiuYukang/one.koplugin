@@ -21,7 +21,7 @@ one.koplugin/
 ├── _meta.lua               插件元信息（KOReader 插件规范必需）
 ├── main.lua                入口：UI 菜单、业务编排（预计 800-1200 行）
 ├── config.example.lua      配置模板（可选，若需常量集中管理）
-├── lib/
+├── one_reader/
 │   ├── client.lua          HTTP 抓取（socket.http；v3 端点为纯 HTTP，不需 ssl.https）
 │   ├── parser.lua          JSON 解析 + HTML 清洗（essay/question 的 hp_content 是 HTML）
 │   ├── epub_builder.lua    EPUB 组装（zlib + 手写 zip writer；mimetype 首个且 STORE）
@@ -45,7 +45,7 @@ one.koplugin/
 ## 3. 语言与约定
 
 - 代码/变量名/注释/commit message：**English**
-- 用户可见文案：`_()` 包裹，中文翻译放 `lib/i18n.lua` 的 zh 表
+- 用户可见文案：`_()` 包裹，中文翻译放 `one_reader/i18n.lua` 的 zh 表
 - 与开发者/用户沟通：**简体中文**
 - 循环变量用 `_i` 而非 `_`（`_` 是翻译函数）
 - Lua 5.1 语法（KOReader 用 LuaJIT）
@@ -58,13 +58,13 @@ one.koplugin/
 
 按顺序完成：
 
-1. **`lib/client.lua`**：`http_get(url, timeout)` 封装 `socket.http.request`，返回 `body, status`。v3 端点全部走明文 HTTP:8000，**不需要 ssl.https**（HTML 兜底才需要）
-2. **`lib/parser.lua`**：JSON 反序列化（用 KOReader 内置 `rapidjson` 或 `cjson`）+ HTML 清洗器（essay/question 的 `hp_content`/`answer_content` 是干净 HTML，只需图片本地化）。对拍见 `scripts/one_v3_probe.py`
-3. **`lib/image_cache.lua`**：`get(url)` → 本地路径。文件名 = `sha256(url).jpg`（sha256 可从 crypto 库或自实现），落到 `<data_dir>/one/img/`
-4. **`lib/epub_builder.lua`**：核心，见下节
+1. **`one_reader/client.lua`**：`http_get(url, timeout)` 封装 `socket.http.request`，返回 `body, status`。v3 端点全部走明文 HTTP:8000，**不需要 ssl.https**（HTML 兜底才需要）
+2. **`one_reader/parser.lua`**：JSON 反序列化（用 KOReader 内置 `rapidjson` 或 `cjson`）+ HTML 清洗器（essay/question 的 `hp_content`/`answer_content` 是干净 HTML，只需图片本地化）。对拍见 `scripts/one_v3_probe.py`
+3. **`one_reader/image_cache.lua`**：`get(url)` → 本地路径。文件名 = `sha256(url).jpg`（sha256 可从 crypto 库或自实现），落到 `<data_dir>/one/img/`
+4. **`one_reader/epub_builder.lua`**：核心，见下节
 5. **`main.lua`** 骨架：注册 tools 菜单 → 「今日一期」→ 抓 index → 抓 3 详情 → 拼 EPUB → `ReaderUI:showReader(epub_path)`
 
-### 4.2 EPUB 组装细节（`lib/epub_builder.lua`）
+### 4.2 EPUB 组装细节（`one_reader/epub_builder.lua`）
 
 **这是最容易踩坑的部分**。EPUB = zip 包 + 特定文件结构 + XML 元数据。KOReader 用 crengine 解析，容错性不算好。
 
@@ -131,7 +131,7 @@ OEBPS/images/*.jpg          # 文章/问答内嵌图（可选）
 
 ### 4.4 Milestone 3：历史日期查询
 
-**v3 API 已彻底解决历史查询问题**，所有内容类型都有明确日期字段。参考实现见 **`scripts/one_v3_probe.py`**（Python 实测通过），Lua 端 `lib/date_index.lua` 照移植即可。
+**v3 API 已彻底解决历史查询问题**，所有内容类型都有明确日期字段。参考实现见 **`scripts/one_v3_probe.py`**（Python 实测通过），Lua 端 `one_reader/date_index.lua` 照移植即可。
 
 **推荐路径**：
 
@@ -278,8 +278,8 @@ python3 scripts/one_v3_probe.py find 2020-01-01 # 按日期反查 article_id
 ## 9. 开发流程建议
 
 1. 先跑 `scripts/one_v3_probe.py all`，看输出，理解 v3 JSON 结构
-2. 从 `lib/parser.lua` 开始，写 Lua 端解析器，对拍 Python 结果
-3. 写 `lib/epub_builder.lua`，先手工造一份最小 EPUB，用 KOReader 打开验证格式正确
+2. 从 `one_reader/parser.lua` 开始，写 Lua 端解析器，对拍 Python 结果
+3. 写 `one_reader/epub_builder.lua`，先手工造一份最小 EPUB，用 KOReader 打开验证格式正确
 4. 拼 `main.lua` 骨架，实现「今日一期」端到端 → 这是 MVP
 5. 逐个添加：最近 7 天 → 按日期查看 → 缓存管理 → 合集 EPUB
 6. 每完成一个 milestone，用 `weread.koplugin` 的运行方式装到真机跑一次
@@ -308,7 +308,7 @@ python3 scripts/one_v3_probe.py find 2020-01-01 # 按日期反查 article_id
 
 - `weread.koplugin`（同作者）
   - 目录布局、i18n、settings、network 模式全部可直接借鉴
-  - **重点参考**：`lib/i18n.lua`, `lib/settings.lua`, `main.lua` 的菜单注册和 `runNetworkAction` 模式
+  - **重点参考**：`one_reader/i18n.lua`, `one_reader/settings.lua`, `main.lua` 的菜单注册和 `runNetworkAction` 模式
 - KOReader 源码：`https://github.com/koreader/koreader` → `frontend/ui/widget/`
 - KOReader 用户手册：`https://koreader.rocks/user_guide/`
 - Menu widget 源码：`frontend/ui/widget/menu.lua`（决定 UI 长啥样）

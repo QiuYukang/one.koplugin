@@ -1,6 +1,6 @@
 local bit = require("bit")
-local ImageCache = require("lib.image_cache")
-local I18n = require("lib.i18n")
+local ImageCache = require("one_reader.image_cache")
+local I18n = require("one_reader.i18n")
 
 local function _(text)
     return I18n.tr(text)

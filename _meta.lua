@@ -1,4 +1,4 @@
-local I18n = require("lib.i18n")
+local I18n = require("one_reader.i18n")
 
 local function _(text)
     return I18n.tr(text)

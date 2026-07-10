@@ -1,5 +1,5 @@
-local Parser = require("lib.parser")
-local DateIndex = require("lib.date_index")
+local Parser = require("one_reader.parser")
+local DateIndex = require("one_reader.date_index")
 
 -- v3 JSON API data source (http://v3.wufazhuce.com:8000). Maps the official JSON
 -- into the same image/article/question tables the HTML parser produces, so the

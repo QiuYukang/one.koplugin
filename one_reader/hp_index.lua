@@ -1,4 +1,4 @@
-local DateIndex = require("lib.date_index")
+local DateIndex = require("one_reader.date_index")
 
 -- Piecewise "breakpoint" index mapping VOL -> image_id (hpcontent_id).
 --

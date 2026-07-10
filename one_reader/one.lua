@@ -1,10 +1,10 @@
 local lfs = require("libs/libkoreader-lfs")
-local Parser = require("lib.parser")
-local DateIndex = require("lib.date_index")
-local ImageCache = require("lib.image_cache")
-local EpubBuilder = require("lib.epub_builder")
-local HpIndex = require("lib.hp_index")
-local V3 = require("lib.v3")
+local Parser = require("one_reader.parser")
+local DateIndex = require("one_reader.date_index")
+local ImageCache = require("one_reader.image_cache")
+local EpubBuilder = require("one_reader.epub_builder")
+local HpIndex = require("one_reader.hp_index")
+local V3 = require("one_reader.v3")
 
 -- Service layer: fetch ONE content, cache it under per-date folders, resolve
 -- images and build EPUBs. No UI here -- callers pass a `progress(stage, cur,

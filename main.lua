@@ -11,12 +11,12 @@ local WidgetContainer = require("ui/widget/container/widgetcontainer")
 local logger = require("logger")
 local T = require("ffi/util").template
 
-local Client = require("lib.client")
-local Cleanup = require("lib.cleanup")
-local DateIndex = require("lib.date_index")
-local I18n = require("lib.i18n")
-local One = require("lib.one")
-local Settings = require("lib.settings")
+local Client = require("one_reader.client")
+local Cleanup = require("one_reader.cleanup")
+local DateIndex = require("one_reader.date_index")
+local I18n = require("one_reader.i18n")
+local One = require("one_reader.one")
+local Settings = require("one_reader.settings")
 
 -- `_` is the translation function; never reuse it as a loop placeholder here.
 local function _(text)
