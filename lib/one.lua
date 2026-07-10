@@ -153,11 +153,12 @@ function One.save_issue(settings, issue)
 
     -- Maintain a lightweight index for fast cached-list rendering / lookup.
     local cached = settings:get("cached", {})
+    local first_article = issue.articles and issue.articles[1] or issue.article
     cached[tostring(image_id)] = {
         image_id = tostring(image_id),
         vol = issue.vol,
         iso_date = issue.iso_date,
-        article_id = issue.article and issue.article.article_id,
+        article_id = first_article and first_article.article_id,
         question_id = issue.question and issue.question.question_id,
         saved_at = os.time(),
     }
@@ -217,11 +218,12 @@ function One.rebuild_cache_index(settings)
                     local issue = ok and chunk and select(2, pcall(chunk)) or nil
                     local image_id = type(issue) == "table" and issue.image and issue.image.image_id
                     if image_id then
+                        local first_article = issue.articles and issue.articles[1] or issue.article
                         cached[tostring(image_id)] = {
                             image_id = tostring(image_id),
                             vol = issue.vol,
                             iso_date = issue.iso_date,
-                            article_id = issue.article and issue.article.article_id,
+                            article_id = first_article and first_article.article_id,
                             question_id = issue.question and issue.question.question_id,
                             saved_at = lfs.attributes(path, "modification") or os.time(),
                         }
@@ -296,17 +298,30 @@ function One.fetch_question(client, question_id)
 end
 
 -- Collect every image reference of an issue, each tagged with a readable stem
--- (image / article-N / question-N) and its owning block.
+-- (image / article-<a>-<n> / question-N) and its owning block. Legacy single-
+-- article caches keep the old article-<n> stems so their images still resolve.
 local function issue_image_refs(issue)
     local refs = {}
     if issue.image and issue.image.image_url then
         refs[#refs + 1] = { owner = issue.image, url = issue.image.image_url, stem = "image" }
     end
-    local a = 0
-    for _, block in ipairs(issue.article and issue.article.blocks or {}) do
-        if block.kind == "img" and block.url then
-            a = a + 1
-            refs[#refs + 1] = { owner = block, url = block.url, stem = "article-" .. a }
+    if issue.articles then
+        for ai, article in ipairs(issue.articles) do
+            local a = 0
+            for _, block in ipairs(article.blocks or {}) do
+                if block.kind == "img" and block.url then
+                    a = a + 1
+                    refs[#refs + 1] = { owner = block, url = block.url, stem = "article-" .. ai .. "-" .. a }
+                end
+            end
+        end
+    elseif issue.article then
+        local a = 0
+        for _, block in ipairs(issue.article.blocks or {}) do
+            if block.kind == "img" and block.url then
+                a = a + 1
+                refs[#refs + 1] = { owner = block, url = block.url, stem = "article-" .. a }
+            end
         end
     end
     local q = 0
@@ -368,11 +383,20 @@ function One.fetch_issue(client, settings, ids, quality, progress)
         image = image,
     }
 
-    if ids.article_id then
-        if progress then progress("article") end
-        local article = One.fetch_article(client, ids.article_id)
-        if article and (article.title or #(article.blocks or {}) > 0) then
-            issue.article = article
+    -- article_ids is the list of essays for the day (v3); fall back to a single
+    -- article_id for the HTML index path.
+    local article_ids = ids.article_ids or (ids.article_id and { ids.article_id }) or nil
+    if article_ids then
+        local articles = {}
+        for _, aid in ipairs(article_ids) do
+            if progress then progress("article") end
+            local article = One.fetch_article(client, aid)
+            if article and (article.title or #(article.blocks or {}) > 0) then
+                articles[#articles + 1] = article
+            end
+        end
+        if #articles > 0 then
+            issue.articles = articles
         end
     end
 
@@ -560,7 +584,7 @@ function One.today_ids(client, settings)
         if image_id then
             return {
                 image_id = image_id,
-                article_id = t.article_id,
+                article_ids = t.article_ids,
                 question_id = t.question_id,
                 date = t.date,
             }
@@ -579,19 +603,20 @@ end
 -- date-addressable without v3). Returns ids table or nil.
 function One.ids_for_date(client, settings, y, m, d, progress)
     local iso = DateIndex.iso(y, m, d)
-    local essay_id, question_id
+    local essay_ids, question_id
     if client.has_json then
-        essay_id, question_id = V3.ids_for_date(client, y, m, d, {
+        essay_ids, question_id = V3.ids_for_date(client, y, m, d, {
             on_progress = function() if progress then progress("index") end end,
         })
     end
     local image_id = One.resolve_date(client, settings, y, m, d, progress)
-    if not image_id and not essay_id and not question_id then
+    local has_essays = essay_ids and #essay_ids > 0
+    if not image_id and not has_essays and not question_id then
         return nil
     end
     return {
         image_id = image_id,
-        article_id = essay_id,
+        article_ids = has_essays and essay_ids or nil,
         question_id = question_id,
         date = iso,
     }
@@ -623,6 +648,7 @@ function One.ids_from_entry(client, settings, entry, progress)
     if entry.image_id then
         return {
             image_id = entry.image_id,
+            article_ids = entry.article_ids,
             article_id = entry.article_id,
             question_id = entry.question_id,
             date = entry.date,
@@ -630,13 +656,14 @@ function One.ids_from_entry(client, settings, entry, progress)
     end
     if entry.date then
         local y, m, d = entry.date:match("(%d+)-(%d+)-(%d+)")
-        if not (entry.article_id or entry.question_id) then
-            -- No ids attached: resolve the whole issue (image + essay + question).
+        if not (entry.article_ids or entry.article_id or entry.question_id) then
+            -- No ids attached: resolve the whole issue (image + essays + question).
             return One.ids_for_date(client, settings, tonumber(y), tonumber(m), tonumber(d), progress)
         end
         local image_id = One.resolve_date(client, settings, tonumber(y), tonumber(m), tonumber(d), progress)
         return {
             image_id = image_id,
+            article_ids = entry.article_ids,
             article_id = entry.article_id,
             question_id = entry.question_id,
             date = entry.date,
@@ -645,17 +672,15 @@ function One.ids_from_entry(client, settings, entry, progress)
     return nil
 end
 
--- Find a cached issue's index entry by ISO date (for recent-list status marks).
-function One.cached_by_date(settings, iso)
-    if not iso then
-        return nil
+-- Is an issue for this ISO date cached on disk? Uses the same disk truth as
+-- build_cached_by_date (the date folder's issue.lua), so a "cached" mark always
+-- matches whether the issue actually opens without network -- independent of the
+-- in-memory index, which can lag.
+function One.is_cached_by_date(settings, iso)
+    if not iso or iso == "" then
+        return false
     end
-    for _, info in pairs(settings:get("cached", {})) do
-        if info.iso_date == iso then
-            return info
-        end
-    end
-    return nil
+    return file_exists(settings.cache_dir .. "/" .. iso .. "/issue.lua")
 end
 
 One.BASE = BASE

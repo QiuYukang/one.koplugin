@@ -95,33 +95,35 @@ function V3.reading_index(client, page)
     return client:get_json("/api/reading/index/" .. tostring(page))
 end
 
--- Extract essay_id / question_id from a reading/index day group.
+-- Extract all essay ids + the question id from a reading/index day group. Some
+-- days publish two or more essays (type=1) and no question; we keep every essay,
+-- in publication order, so the issue can render them all.
 local function ids_from_group(group)
-    local essay_id, question_id
+    local essay_ids, question_id = {}, nil
     for _, it in ipairs(group.items or {}) do
         local c = it.content or {}
-        if it.type == 1 and not essay_id then
-            essay_id = c.content_id and tostring(c.content_id) or nil
-        elseif it.type == 3 and not question_id then
-            question_id = c.question_id and tostring(c.question_id) or nil
+        if it.type == 1 and c.content_id then
+            essay_ids[#essay_ids + 1] = tostring(c.content_id)
+        elseif it.type == 3 and not question_id and c.question_id then
+            question_id = tostring(c.question_id)
         end
     end
-    return essay_id, question_id
+    return essay_ids, question_id
 end
 
 -- Today's date + essay/question ids from reading/index/0. Returns a table
--- { date, article_id, question_id } or nil.
+-- { date, article_ids, question_id } or nil.
 function V3.today(client)
     local data = V3.reading_index(client, 0)
     if type(data) ~= "table" or not data[1] then
         return nil
     end
     local group = data[1]
-    local essay_id, question_id = ids_from_group(group)
-    return { date = group.date, article_id = essay_id, question_id = question_id }
+    local essay_ids, question_id = ids_from_group(group)
+    return { date = group.date, article_ids = essay_ids, question_id = question_id }
 end
 
--- The N most recent days as { date, article_id, question_id }, newest first.
+-- The N most recent days as { date, article_ids, question_id }, newest first.
 function V3.recent_days(client, n)
     local out = {}
     local page = 0
@@ -134,17 +136,17 @@ function V3.recent_days(client, n)
             if #out >= n then
                 break
             end
-            local essay_id, question_id = ids_from_group(group)
-            out[#out + 1] = { date = group.date, article_id = essay_id, question_id = question_id }
+            local essay_ids, question_id = ids_from_group(group)
+            out[#out + 1] = { date = group.date, article_ids = essay_ids, question_id = question_id }
         end
         page = page + 1
     end
     return out
 end
 
--- Locate essay_id / question_id for a target ISO date via paged scan. Returns
--- (essay_id, question_id) as strings (either may be nil), or nil if not found.
--- Tolerates empty-page clusters and 500s (guide §7).
+-- Locate essay ids + question id for a target ISO date via paged scan. Returns
+-- (essay_ids table, question_id) -- essay_ids may be empty, question_id may be
+-- nil -- or nil if the date is not found. Tolerates empty-page clusters and 500s.
 function V3.ids_for_date(client, y, m, d, opts)
     opts = opts or {}
     local target = DateIndex.iso(y, m, d)
@@ -174,8 +176,7 @@ function V3.ids_for_date(client, y, m, d, opts)
             if last <= target and target <= first then
                 for _, group in ipairs(data) do
                     if group.date == target then
-                        local essay_id, question_id = ids_from_group(group)
-                        return essay_id, question_id
+                        return ids_from_group(group)
                     end
                 end
                 return nil -- date is within range but has no group (gap day)
@@ -183,13 +184,12 @@ function V3.ids_for_date(client, y, m, d, opts)
                 page = math.max(0, page - 5) -- estimate went too deep
                 if page == 0 then
                     -- avoid infinite loop at the boundary
-                    local essay_id, question_id
                     for _, group in ipairs(data) do
                         if group.date == target then
-                            essay_id, question_id = ids_from_group(group)
+                            return ids_from_group(group)
                         end
                     end
-                    return essay_id, question_id
+                    return nil
                 end
             else
                 page = page + 1 -- target is older

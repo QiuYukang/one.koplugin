@@ -38,7 +38,7 @@ end
 local OnePlugin = WidgetContainer:extend{
     name = "one",
     is_doc_only = false,
-    version = "0.1.0",
+    version = "0.2.0",
 }
 
 function OnePlugin:init()
@@ -392,7 +392,6 @@ function OnePlugin:showRecent()
     -- The last 7 calendar days are known locally (ONE publishes one issue a day),
     -- so the list itself needs no network: we show it instantly, mark which days
     -- are already cached, and only go online when opening a not-yet-cached day.
-    One.rebuild_cache_index(self.settings) -- so "cached" markers match the folders
     local t = os.date("*t")
     local base = os.time({ year = t.year, month = t.month, day = t.day, hour = 12 })
     local entries = {}
@@ -410,31 +409,22 @@ function OnePlugin:showRecent()
 end
 
 function OnePlugin:buildRecentItems(entries)
-    local cached = self.settings:get("cached", {})
     local items = {}
     for i = 1, #entries do
         local entry = entries[i]
-        -- v3 entries carry a date; HTML entries carry an image_id.
-        local info = entry.date and One.cached_by_date(self.settings, entry.date)
-            or (entry.image_id and cached[tostring(entry.image_id)])
-        local text, mandatory
+        local text
         if entry.date then
             -- VOL is a pure function of the date, so label it even when not cached.
             local y, m, d = entry.date:match("(%d+)-(%d+)-(%d+)")
-            local vol = (info and info.vol)
-                or (y and DateIndex.vol_from_date(tonumber(y), tonumber(m), tonumber(d)))
+            local vol = y and DateIndex.vol_from_date(tonumber(y), tonumber(m), tonumber(d))
             text = vol and (T(_("VOL.%1"), vol) .. " · " .. entry.date) or entry.date
-        elseif info and info.vol then
-            text = T(_("VOL.%1"), info.vol) .. " · " .. tostring(info.iso_date or "")
         else
             text = "one/" .. tostring(entry.image_id)
         end
-        if info then
-            mandatory = _("cached")
-        end
+        local cached = entry.date and One.is_cached_by_date(self.settings, entry.date)
         items[i] = {
             text = text,
-            mandatory = mandatory,
+            mandatory = cached and _("cached") or nil,
             keep_menu_open = false,
             callback = function()
                 self:openRecentEntry(entry)
@@ -455,9 +445,10 @@ end
 function OnePlugin:openRecentEntry(entry)
     -- Already cached for this date? Open it straight from disk, no network.
     if entry.date then
-        local info = One.cached_by_date(self.settings, entry.date)
-        if info and info.image_id then
-            self:openCachedIssue(info.image_id)
+        local cached_path, cached_issue = One.build_cached_by_date(self.settings, entry.date)
+        if cached_path then
+            self._current_issue = cached_issue
+            self:openFile(cached_path)
             return
         end
     end
@@ -489,36 +480,57 @@ end
 -- Browse by date
 -- ---------------------------------------------------------------------------
 
+-- Top level: a direct date picker plus one entry per month (newest first) back to
+-- VOL.1's month. Each month drills into a day list; each day opens that single
+-- issue. No range downloads -- browsing is pure single-day selection.
 function OnePlugin:getBrowseByDateItems()
-    local today = os.date("*t")
-    local function offset_date(days)
-        local t = os.time({ year = today.year, month = today.month, day = today.day, hour = 12 })
-        return os.date("*t", t - days * 86400)
-    end
-    local function entry(label, dt)
-        return {
-            text = label,
-            mandatory = DateIndex.iso(dt.year, dt.month, dt.day),
-            keep_menu_open = false,
-            callback = function() self:openByDate(dt.year, dt.month, dt.day) end,
-        }
-    end
-    return {
-        entry(_("Yesterday"), offset_date(1)),
-        entry(_("Last week"), offset_date(7)),
-        entry(_("A month ago"), offset_date(30)),
-        entry(_("A year ago"), offset_date(365)),
+    local items = {
         {
             text = _("Pick a date..."),
             keep_menu_open = false,
             callback = function() self:showDatePicker() end,
         },
-        {
-            text = _("Pick a date range..."),
-            keep_menu_open = false,
-            callback = function() self:showDateRangePicker() end,
-        },
     }
+    local today = os.date("*t")
+    local y, m = today.year, today.month
+    while (y > 2012) or (y == 2012 and m >= 10) do -- ONE began 2012-10
+        local yy, mm = y, m
+        items[#items + 1] = {
+            text = string.format("%04d-%02d", yy, mm),
+            sub_item_table_func = function() return self:getMonthDayItems(yy, mm) end,
+        }
+        m = m - 1
+        if m == 0 then m = 12; y = y - 1 end
+    end
+    return items
+end
+
+-- Day list for one month, newest first. Future days and pre-launch days are
+-- skipped. Each row shows VOL + date and whether it is already cached.
+function OnePlugin:getMonthDayItems(y, m)
+    local today = os.date("*t")
+    local last = os.date("*t", os.time({ year = y, month = m + 1, day = 0, hour = 12 })).day
+    local items = {}
+    for d = last, 1, -1 do
+        local future = DateIndex.days_between(today.year, today.month, today.day, y, m, d) > 0
+        if not future and DateIndex.vol_from_date(y, m, d) >= 1 then
+            local iso = DateIndex.iso(y, m, d)
+            local vol = DateIndex.vol_from_date(y, m, d)
+            -- This is a TouchMenu submenu, which does NOT render the `mandatory`
+            -- field (unlike the Menu widget used by the recent list), so the
+            -- cached mark has to go into the item text itself.
+            local label = T(_("VOL.%1"), vol) .. " · " .. iso
+            if One.is_cached_by_date(self.settings, iso) then
+                label = label .. "  ✓ " .. _("cached")
+            end
+            items[#items + 1] = {
+                text = label,
+                keep_menu_open = false,
+                callback = function() self:openByDate(y, m, d) end,
+            }
+        end
+    end
+    return items
 end
 
 function OnePlugin:showDatePicker()
@@ -573,79 +585,6 @@ function OnePlugin:openByDate(y, m, d)
     end)
 end
 
-function OnePlugin:showDateRangePicker()
-    local today = os.date("*t")
-    local week_ago = os.date("*t", os.time({ year = today.year, month = today.month, day = today.day, hour = 12 }) - 6 * 86400)
-    UIManager:show(DateTimeWidget:new{
-        year = week_ago.year, month = week_ago.month, day = week_ago.day,
-        ok_text = _("OK"),
-        title_text = _("Start date"),
-        callback = function(start_t)
-            UIManager:show(DateTimeWidget:new{
-                year = today.year, month = today.month, day = today.day,
-                ok_text = _("OK"),
-                title_text = _("End date"),
-                callback = function(end_t)
-                    self:confirmDateRange(start_t, end_t)
-                end,
-            })
-        end,
-    })
-end
-
-function OnePlugin:confirmDateRange(start_t, end_t)
-    if not self:validateDate(start_t.year, start_t.month, start_t.day) then return end
-    if not self:validateDate(end_t.year, end_t.month, end_t.day) then return end
-    local days = DateIndex.days_between(
-        start_t.year, start_t.month, start_t.day,
-        end_t.year, end_t.month, end_t.day) + 1
-    if days < 1 then
-        start_t, end_t = end_t, start_t
-        days = -days + 2
-    end
-    if days > 31 then
-        days = 31 -- hard cap to bound request cost; note it to the user
-    end
-    UIManager:show(ConfirmBox:new{
-        text = T(_("Download %1 issues (%2)?"), days,
-            "~" .. Cleanup.human_size(days * 90 * 1024)),
-        ok_text = _("Download and generate"),
-        ok_callback = function()
-            self:downloadDateRange(start_t, end_t, days)
-        end,
-    })
-end
-
-function OnePlugin:downloadDateRange(start_t, end_t, days)
-    self:runFetch(_("Browse by date"), T(_("Downloading %1 issues..."), days), function(progress)
-        local quality = self.settings:get("content").image_quality
-        local issues = {}
-        local base = os.time({ year = start_t.year, month = start_t.month, day = start_t.day, hour = 12 })
-        for i = 0, days - 1 do
-            progress("collect", i + 1, days)
-            local dt = os.date("*t", base + i * 86400)
-            local ids = One.ids_for_date(self.client, self.settings, dt.year, dt.month, dt.day)
-            if ids and ids.image_id then
-                local issue = One.load_issue(self.settings, ids.image_id)
-                if issue then
-                    One.reattach_cached_images(self.settings, issue)
-                else
-                    issue = One.fetch_issue(self.client, self.settings, ids, quality)
-                end
-                issues[#issues + 1] = issue
-            end
-        end
-        if #issues == 0 then
-            return ""
-        end
-        progress("build")
-        local range_label = DateIndex.iso(start_t.year, start_t.month, start_t.day)
-            .. " – " .. DateIndex.iso(end_t.year, end_t.month, end_t.day)
-        return One.build_collection(self.settings, issues, range_label)
-    end, function(path)
-        self:openFile(path)
-    end)
-end
 
 -- Combine a list of recent entries into a collection EPUB.
 function OnePlugin:downloadCollection(entries, label)

@@ -7,5 +7,5 @@ end
 return {
     fullname = _("ONE · 一个"),
     description = _([[Read the daily image, article and question from ONE (wufazhuce.com) offline in KOReader as a per-issue EPUB.]]),
-    version = "0.1.0",
+    version = "0.2.0",
 }

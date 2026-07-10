@@ -218,8 +218,8 @@ local function image_chapter_body(issue, asset_state)
     return table.concat(parts, "\n")
 end
 
-local function article_chapter_body(issue, asset_state)
-    local article = issue.article or {}
+local function article_chapter_body(article, asset_state)
+    article = article or {}
     local title = article.title or _("Article")
     local parts = { "<h1>" .. xml_escape(title) .. "</h1>" }
     if article.author then
@@ -257,12 +257,16 @@ local function build_issue_chapters(issue, asset_state, entries, manifest, spine
     local chapters = {
         { title = _("Image"), nav_title = _("Image"), body = image_chapter_body(issue, asset_state) },
     }
-    if issue.article then
+    -- New issues carry issue.articles (one or more essays); older caches carry a
+    -- single issue.article. Render one chapter per essay either way.
+    local articles = issue.articles or (issue.article and { issue.article }) or {}
+    for _a = 1, #articles do
+        local article = articles[_a]
         chapters[#chapters + 1] = {
-            title = issue.article.title or _("Article"),
-            nav_title = _("Article") .. (issue.article.title
-                and (" · " .. issue.article.title) or ""),
-            body = article_chapter_body(issue, asset_state),
+            title = article.title or _("Article"),
+            nav_title = _("Article") .. (article.title
+                and (" · " .. article.title) or ""),
+            body = article_chapter_body(article, asset_state),
         }
     end
     if issue.question then
