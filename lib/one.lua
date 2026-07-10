@@ -3,6 +3,7 @@ local Parser = require("lib.parser")
 local DateIndex = require("lib.date_index")
 local ImageCache = require("lib.image_cache")
 local EpubBuilder = require("lib.epub_builder")
+local HpIndex = require("lib.hp_index")
 local V3 = require("lib.v3")
 
 -- Service layer: fetch ONE content, cache it under per-date folders, resolve
@@ -20,6 +21,22 @@ local V3 = require("lib.v3")
 local One = {}
 
 local BASE = "https://wufazhuce.com"
+
+-- One hp VOL->image_id index, created lazily per data dir and reused so lookups
+-- and learned points share a single in-memory table.
+local _hp_index_cache = {}
+local function hp_index_for(settings)
+    if not settings then
+        return nil
+    end
+    local key = settings.data_dir or "default"
+    local idx = _hp_index_cache[key]
+    if not idx then
+        idx = HpIndex.new(settings)
+        _hp_index_cache[key] = idx
+    end
+    return idx
+end
 
 -- ---------------------------------------------------------------------------
 -- Paths
@@ -163,6 +180,41 @@ function One.load_issue(settings, image_id)
         return nil
     end
     return issue
+end
+
+-- Rebuild the cached-issue index from disk truth. Each issue folder is
+-- self-consistent (its name and issue.lua share one iso_date), but the settings
+-- index can drift when a bad date resolution overwrote an image_id entry. Walking
+-- the folders and reindexing by the issue's own image_id repairs that: it drops
+-- phantom entries whose folder is gone and adds folders missing from the index.
+function One.rebuild_cache_index(settings)
+    local root = settings.cache_dir
+    local cached = {}
+    if lfs.attributes(root, "mode") == "directory" then
+        for name in lfs.dir(root) do
+            if name ~= "." and name ~= ".." and name ~= "collections" then
+                local path = root .. "/" .. name .. "/issue.lua"
+                if file_exists(path) then
+                    local ok, chunk = pcall(loadfile, path)
+                    local issue = ok and chunk and select(2, pcall(chunk)) or nil
+                    local image_id = type(issue) == "table" and issue.image and issue.image.image_id
+                    if image_id then
+                        cached[tostring(image_id)] = {
+                            image_id = tostring(image_id),
+                            vol = issue.vol,
+                            iso_date = issue.iso_date,
+                            article_id = issue.article and issue.article.article_id,
+                            question_id = issue.question and issue.question.question_id,
+                            saved_at = lfs.attributes(path, "modification") or os.time(),
+                        }
+                    end
+                end
+            end
+        end
+    end
+    settings:set("cached", cached)
+    settings:flush()
+    return cached
 end
 
 -- ---------------------------------------------------------------------------
@@ -364,6 +416,31 @@ function One.build_cached_issue(settings, image_id)
     return EpubBuilder.build_issue(issue, out), issue
 end
 
+-- Open a cached issue by ISO date with NO network. The folder is named by the
+-- issue's own iso_date, so a cached day lives at <cache_dir>/<iso>/. Returns
+-- (path, issue) reusing the built EPUB if present, or nil if not cached.
+function One.build_cached_by_date(settings, iso)
+    if not iso or iso == "" then
+        return nil
+    end
+    local dir = settings.cache_dir .. "/" .. iso
+    local path = dir .. "/issue.lua"
+    if not file_exists(path) then
+        return nil
+    end
+    local ok, chunk = pcall(loadfile, path)
+    local issue = ok and chunk and select(2, pcall(chunk)) or nil
+    if type(issue) ~= "table" or not (issue.image and issue.image.image_id) then
+        return nil
+    end
+    local out = dir .. "/" .. epub_name(issue)
+    if file_exists(out) then
+        return out, issue
+    end
+    One.reattach_cached_images(settings, issue)
+    return EpubBuilder.build_issue(issue, out), issue
+end
+
 -- Delete a cached issue: its whole date folder plus its index entry.
 function One.delete_issue(settings, image_id)
     local dir, info = dir_for_image_id(settings, image_id)
@@ -389,10 +466,38 @@ function One.build_collection(settings, issues, range_label)
     return EpubBuilder.build_collection(issues, range_label, out)
 end
 
--- Resolve a target date to an image_id via probe + bounded scan. Works over
--- both v3 (image.iso_date) and HTML (image.day/month_year) since fetch_image is
--- source-agnostic. Returns image_id (string) or nil.
-function One.resolve_date(client, y, m, d, progress)
+-- Resolve a target date to an image_id. Consults the VOL->image_id breakpoint
+-- index first: an exact hit returns with zero network; otherwise the index's
+-- interpolated guess seeds a probe + bounded scan, and the confirmed id is
+-- recorded back so the index densifies. Works over both v3 (image.iso_date) and
+-- HTML (image.day/month_year) since fetch_image is source-agnostic. Returns
+-- image_id (string) or nil.
+function One.resolve_date(client, settings, y, m, d, progress, today_date)
+    local index = hp_index_for(settings)
+    local vol = DateIndex.vol_from_date(y, m, d)
+    local guess
+    if index then
+        local exact
+        guess, exact = index:lookup(vol)
+        if exact and guess then
+            return tostring(guess) -- confirmed / stable contiguous span: zero network
+        end
+    end
+
+    -- Recent band: ids are scrambled, so date-diff probing thrashes and fails.
+    -- hp/idlist enumerates strictly by date, so it resolves recent dates cheaply.
+    if client.has_json then
+        local id = V3.image_id_by_date(client, y, m, d, {
+            today_date = today_date,
+            on_progress = function(p) if progress then progress("index", p) end end,
+        })
+        if id then
+            if index then index:record(vol, tonumber(id)) end
+            return id
+        end
+    end
+
+    -- Older/stable band: index-guided interpolation + probe + bounded scan.
     local function fetch_date(id)
         local image, err = One.fetch_image(client, id)
         if not image then
@@ -410,23 +515,30 @@ function One.resolve_date(client, y, m, d, progress)
         end
         return { year = yy, month = mm, day = dd }
     end
-    return DateIndex.resolve_date(fetch_date, y, m, d, {
-        on_progress = progress,
-        scan_budget = 40,
-    })
+
+    -- idlist already covers recent dates; the probe only runs for the older,
+    -- monotonic band where it converges in a few steps, so a small budget is enough.
+    local opts = { on_progress = progress, scan_budget = 20, guess = guess }
+    local id = DateIndex.resolve_date(fetch_date, y, m, d, opts)
+    if id and index then
+        index:record(vol, tonumber(id))
+    end
+    return id
 end
 
 -- ---------------------------------------------------------------------------
 -- Id discovery (v3 timeline first, HTML index fallback)
 -- ---------------------------------------------------------------------------
 
--- Today's issue ids. v3: reading/index/0 (essay+question) + image by date probe.
+-- Today's issue ids. v3: reading/index/0 (essay+question date) + hp/idlist/0 for
+-- the image (its first entry is always today -- idlist is date-descending). This
+-- avoids the scrambled-band probe entirely, so today opens in ~2 requests.
 -- Fallback: HTML homepage index. Returns { image_id, article_id, question_id, date }.
 function One.today_ids(client, settings)
     local t = V3.today(client)
     if t and t.date then
         local y, m, d = t.date:match("(%d+)-(%d+)-(%d+)")
-        local image_id = One.resolve_date(client, tonumber(y), tonumber(m), tonumber(d))
+        local image_id = One.resolve_date(client, settings, tonumber(y), tonumber(m), tonumber(d), nil, t.date)
         if image_id then
             return {
                 image_id = image_id,
@@ -447,7 +559,7 @@ end
 -- Ids for an arbitrary date. v3: essay/question via reading/index timeline +
 -- image via date probe. Fallback: HTML image-only (essay/question aren't
 -- date-addressable without v3). Returns ids table or nil.
-function One.ids_for_date(client, y, m, d, progress)
+function One.ids_for_date(client, settings, y, m, d, progress)
     local iso = DateIndex.iso(y, m, d)
     local essay_id, question_id
     if client.has_json then
@@ -455,7 +567,7 @@ function One.ids_for_date(client, y, m, d, progress)
             on_progress = function() if progress then progress("index") end end,
         })
     end
-    local image_id = One.resolve_date(client, y, m, d, progress)
+    local image_id = One.resolve_date(client, settings, y, m, d, progress)
     if not image_id and not essay_id and not question_id then
         return nil
     end
@@ -486,9 +598,10 @@ function One.recent_days(client, settings, n)
     return out
 end
 
--- Turn a recent-list entry into concrete ids, resolving the image by date when
--- the entry only carries a date (v3 path).
-function One.ids_from_entry(client, entry, progress)
+-- Turn a recent-list entry into concrete ids. Entries that already carry ids use
+-- them; a date-only entry (locally-built recent list) is resolved in full via
+-- ids_for_date so its essay AND question are fetched, not just the image.
+function One.ids_from_entry(client, settings, entry, progress)
     if entry.image_id then
         return {
             image_id = entry.image_id,
@@ -499,7 +612,11 @@ function One.ids_from_entry(client, entry, progress)
     end
     if entry.date then
         local y, m, d = entry.date:match("(%d+)-(%d+)-(%d+)")
-        local image_id = One.resolve_date(client, tonumber(y), tonumber(m), tonumber(d), progress)
+        if not (entry.article_id or entry.question_id) then
+            -- No ids attached: resolve the whole issue (image + essay + question).
+            return One.ids_for_date(client, settings, tonumber(y), tonumber(m), tonumber(d), progress)
+        end
+        local image_id = One.resolve_date(client, settings, tonumber(y), tonumber(m), tonumber(d), progress)
         return {
             image_id = image_id,
             article_id = entry.article_id,

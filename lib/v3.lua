@@ -200,7 +200,66 @@ function V3.ids_for_date(client, y, m, d, opts)
 end
 
 -- ---------------------------------------------------------------------------
--- Image by date (anchor interpolation + probe on hp_makettime)
+-- Image by date via hp/idlist pagination (the reliable path for recent dates)
+-- ---------------------------------------------------------------------------
+
+-- hp/idlist/0 returns the 10 newest published issues, strictly date-descending
+-- and date-contiguous (VOL never skips a day). Higher pages are reached by
+-- passing the previous page's LAST id as the offset, each covering the next 10
+-- older days in the same order. So a target date's image_id is found purely by
+-- position -- no per-id probing -- which is what makes recent dates fast and
+-- correct even though the ids themselves are scrambled (pre-allocated) in that
+-- band. Verified against the live API 2026-07-10.
+--
+-- Returns image_id (string) or nil when the date is in the future, too old for
+-- idlist (beyond opts.max_days, caller should probe instead), or on a gap/error.
+function V3.image_id_by_date(client, y, m, d, opts)
+    opts = opts or {}
+    local today = opts.today_date
+    if not today then
+        local t = V3.today(client)
+        today = t and t.date
+    end
+    if not today then
+        return nil
+    end
+    local ty, tm, td = today:match("(%d+)-(%d+)-(%d+)")
+    if not ty then
+        return nil
+    end
+    local diff = DateIndex.days_between(y, m, d, tonumber(ty), tonumber(tm), tonumber(td))
+    if diff < 0 then
+        return nil -- future date
+    end
+    if diff > (opts.max_days or 90) then
+        return nil -- too deep for page walking; let the caller probe
+    end
+
+    local page = math.floor(diff / 10)
+    local within = diff % 10
+    local offset = "0"
+    local ids
+    for p = 0, page do
+        if opts.on_progress then
+            opts.on_progress(p)
+        end
+        ids = client:get_json("/api/hp/idlist/" .. offset)
+        if type(ids) ~= "table" or #ids == 0 then
+            return nil
+        end
+        if p < page then
+            if #ids < 10 then
+                return nil -- ran out of pages before reaching the target day
+            end
+            offset = tostring(ids[#ids])
+        end
+    end
+    local sid = ids[within + 1]
+    return sid and tostring(sid) or nil
+end
+
+-- ---------------------------------------------------------------------------
+-- Image by date (anchor interpolation + probe on hp_makettime) -- old dates
 -- ---------------------------------------------------------------------------
 
 function V3.find_image_id_by_date(client, y, m, d, opts)

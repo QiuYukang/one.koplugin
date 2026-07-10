@@ -1,14 +1,16 @@
 -- image_id <-> VOL <-> date conversions (guide §4.4, api-reference §11).
 --
 -- Facts we rely on:
---   * VOL increments by exactly 1 every day; VOL.1 == 2012-10-08.
+--   * VOL increments by exactly 1 every day; VOL.1 == 2012-10-07.
 --   * image_id increases monotonically but skips ~3% of ids, so it cannot be
 --     computed from a date directly -- we interpolate then probe-and-adjust.
 
 local DateIndex = {}
 
--- VOL.1 publication date.
-DateIndex.EPOCH = { year = 2012, month = 10, day = 8 }
+-- VOL.1 publication date. Verified against the v3 API: hp id 14 = VOL.8 with
+-- hp_makettime 2012-10-14, so VOL.1 = 2012-10-07 (the earlier "2012-10-08" note
+-- was off by one and made vol_from_date lag the real VOL by 1).
+DateIndex.EPOCH = { year = 2012, month = 10, day = 7 }
 
 -- Measured (image_id -> VOL) anchors, sorted by image_id.
 DateIndex.ANCHORS = {
@@ -145,7 +147,8 @@ function DateIndex.find_image_id_by_date(fetch_date, y, m, d, opts)
         return nil, "before_epoch"
     end
 
-    local guess = DateIndex.interpolate_id(target_vol)
+    -- opts.guess lets a denser external index (hp_index) inject a tighter start.
+    local guess = opts.guess or DateIndex.interpolate_id(target_vol)
     local consecutive_404 = 0
     for _i = 1, max_attempts do
         if guess < 1 then
@@ -225,7 +228,7 @@ function DateIndex.resolve_date(fetch_date, y, m, d, opts)
     if id then
         return id, res, "probe"
     end
-    local center = DateIndex.interpolate_id(target_vol)
+    local center = opts.guess or DateIndex.interpolate_id(target_vol)
     local scan_id, scan_res = DateIndex.scan_for_date(fetch_date, y, m, d, center, opts)
     if scan_id then
         return scan_id, scan_res, "scan"

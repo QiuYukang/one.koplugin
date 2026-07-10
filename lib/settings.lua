@@ -11,7 +11,6 @@ local defaults = {
         image_quality = "1080",      -- "orig" | "1080" | "900" | "600"
     },
     cache = {
-        max_size_mb = 200,
         auto_cleanup = true,
         cleanup_days = 30,           -- 0 means "never clean"
         last_cleanup = 0,            -- os.time of last automatic cleanup

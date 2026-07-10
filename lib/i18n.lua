@@ -37,6 +37,7 @@ local zh = {
     ["Fetching %1/%2..."] = "正在获取 %1/%2……",
     ["Locating date..."] = "正在定位日期……",
     ["Please wait..."] = "请稍候……",
+    ["Tap to cancel"] = "点击可取消",
 
     -- Recent / list
     ["Combine these %1 issues into one collection"] = "把这 %1 期合成一本合集",
@@ -57,7 +58,7 @@ local zh = {
     ["Start date"] = "起始日期",
     ["End date"] = "结束日期",
     ["This date is in the future."] = "该日期在未来。",
-    ["ONE started on 2012-10-08; earlier dates do not exist."] = "「ONE·一个」创刊于 2012-10-08，更早的日期不存在。",
+    ["ONE started on 2012-10-07; earlier dates do not exist."] = "「ONE·一个」创刊于 2012-10-07，更早的日期不存在。",
     ["Could not locate an issue for that date."] = "无法定位该日期对应的期号。",
     ["Download %1 issues (%2)?"] = "将下载 %1 期内容（约 %2），是否继续？",
     ["Combine into one collection"] = "合成一本合集",
@@ -79,7 +80,6 @@ local zh = {
     ["600px"] = "600px",
     ["900px"] = "900px",
     ["1080px"] = "1080px",
-    ["Image cache limit"] = "图片缓存上限",
     ["Cache directory"] = "缓存目录",
     ["Cache directory: %1"] = "缓存目录：%1",
     ["Cache directory set to:\n%1"] = "缓存目录已设置为：\n%1",

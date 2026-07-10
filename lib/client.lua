@@ -16,7 +16,9 @@ do
     end
 end
 
-local DEFAULT_TIMEOUT_SECONDS = 15
+-- Per-request socket timeout. Applies to connect and each read, so a dead but
+-- "connected" network fails fast instead of hanging the UI (issue: offline use).
+local DEFAULT_TIMEOUT_SECONDS = 10
 local unpack_args = unpack or table.unpack
 
 -- Polite rate limit: keep at least this many seconds between requests (guide §10).

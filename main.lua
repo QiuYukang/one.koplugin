@@ -156,17 +156,55 @@ function OnePlugin:showInfo(text)
     UIManager:show(InfoMessage:new{ text = text })
 end
 
--- Progress messages use Trapper:info (guide §5, screen 06): a non-blocking info
--- box that can be updated repeatedly and is auto-cleared at task end. It must run
--- inside a Trapper:wrap coroutine, which runOnlineTask sets up.
+-- Progress box that doubles as a Cancel button. Each update replaces the previous
+-- InfoMessage; tapping it sets a cancel flag. Because our network calls block the
+-- Lua VM, we yield to the UI loop after showing (so a pending tap gets processed)
+-- and resume on the next tick -- giving cancellation at every progress step, i.e.
+-- within one request (bounded by the socket timeout). Must run in the task
+-- coroutine that runOnlineTask sets up.
 function OnePlugin:info(text)
-    local Trapper = require("ui/trapper")
-    Trapper:info(text)
+    self:closeProgress()
+    self._progress = InfoMessage:new{
+        text = text .. "\n\n" .. _("Tap to cancel"),
+        dismiss_callback = function()
+            if not self._closing_progress then
+                self._cancelled = true
+            end
+        end,
+    }
+    UIManager:show(self._progress)
+    UIManager:forceRePaint()
+    local co = self._task_co
+    if co and coroutine.running() == co then
+        UIManager:nextTick(function()
+            if coroutine.status(co) == "suspended" then
+                coroutine.resume(co)
+            end
+        end)
+        coroutine.yield()
+    end
 end
 
+function OnePlugin:closeProgress()
+    if self._progress then
+        self._closing_progress = true
+        UIManager:close(self._progress)
+        self._closing_progress = false
+        self._progress = nil
+    end
+end
+
+-- Kept for older call sites; progress is torn down by closeProgress now.
 function OnePlugin:clearInfo()
-    local Trapper = require("ui/trapper")
-    Trapper:clear()
+    self:closeProgress()
+end
+
+-- Abort the running task if the user tapped the progress box. Raises a tagged
+-- error caught by runOnlineTask. Call between network steps.
+function OnePlugin:checkCancelled()
+    if self._cancelled then
+        error("ONE_CANCELLED")
+    end
 end
 
 function OnePlugin:isNetworkOnline()
@@ -181,23 +219,34 @@ function OnePlugin:isNetworkOnline()
     return online == true
 end
 
--- Run a network task inside a Trapper coroutine so progress info can update and
--- clear cleanly, with uniform error handling. `action` may call self:info().
+-- Run a network task in a coroutine so progress can update (and be cancelled)
+-- while the UI stays responsive, with uniform error handling. `action` may call
+-- self:info() to show progress and self:checkCancelled() to honor a Cancel tap.
 function OnePlugin:runOnlineTask(label, action)
     if not self:isNetworkOnline() then
         self:showInfo(T(_("%1 failed:\n%2"), label,
             _("No network connection. Please connect Wi-Fi and try again.")))
         return
     end
-    local Trapper = require("ui/trapper")
-    Trapper:wrap(function()
+    self._cancelled = false
+    local co
+    co = coroutine.create(function()
         local ok, err = xpcall(action, debug.traceback)
-        Trapper:clear()
+        self:closeProgress()
+        self._task_co = nil
         if not ok then
-            logger.err(LOG_MODULE, "task failed:", label, log_error(err))
-            self:showInfo(T(_("%1 failed:\n%2"), label, self:friendlyError(err)))
+            if tostring(err):find("ONE_CANCELLED", 1, true) then
+                logger.info(LOG_MODULE, "task cancelled:", label)
+            else
+                logger.err(LOG_MODULE, "task failed:", label, log_error(err))
+                self:showInfo(T(_("%1 failed:\n%2"), label, self:friendlyError(err)))
+            end
         end
     end)
+    self._task_co = co
+    -- Start on the next tick so the caller's menu can close and the first
+    -- progress box paints before any blocking request.
+    UIManager:nextTick(function() coroutine.resume(co) end)
 end
 
 -- Translate internal error tags into user-facing messages.
@@ -225,6 +274,7 @@ end
 function OnePlugin:makeProgress(vol_hint)
     local label = vol_hint and T(_("Fetching VOL.%1..."), vol_hint) or _("Please wait...")
     return function(stage, cur, total)
+        self:checkCancelled()
         if stage == "image" then
             self:info(_("Fetching image..."))
         elseif stage == "article" then
@@ -246,13 +296,21 @@ end
 -- ---------------------------------------------------------------------------
 
 function OnePlugin:fetchTodayAndOpen()
+    -- If today's issue is already cached, open it straight from disk (no network).
+    local t = os.date("*t")
+    local iso = DateIndex.iso(t.year, t.month, t.day)
+    local cached_path, cached_issue = One.build_cached_by_date(self.settings, iso)
+    if cached_path then
+        self._current_issue = cached_issue
+        self:openFile(cached_path)
+        return
+    end
     self:runOnlineTask(_("Today's issue"), function()
         self:info(_("Fetching today's issue..."))
         local ids = One.today_ids(self.client, self.settings)
         local path, issue = One.prepare_issue(
             self.client, self.settings, ids,
             self.settings:get("content").image_quality, self:makeProgress())
-        self:afterFetch()
         self._current_issue = issue
         self:openFile(path)
     end)
@@ -263,18 +321,24 @@ end
 -- ---------------------------------------------------------------------------
 
 function OnePlugin:showRecent()
-    self:runOnlineTask(_("Recent 7 days"), function()
-        self:info(_("Fetching index..."))
-        local entries = One.recent_days(self.client, self.settings, 7)
-        self:clearInfo()
-        local items = self:buildRecentItems(entries)
-        UIManager:show(Menu:new{
-            title = _("Recent 7 days"),
-            item_table = items,
-            is_borderless = true,
-            title_bar_fm_style = true,
-        })
-    end)
+    -- The last 7 calendar days are known locally (ONE publishes one issue a day),
+    -- so the list itself needs no network: we show it instantly, mark which days
+    -- are already cached, and only go online when opening a not-yet-cached day.
+    One.rebuild_cache_index(self.settings) -- so "cached" markers match the folders
+    local t = os.date("*t")
+    local base = os.time({ year = t.year, month = t.month, day = t.day, hour = 12 })
+    local entries = {}
+    for i = 0, 6 do
+        local dt = os.date("*t", base - i * 86400)
+        entries[i + 1] = { date = DateIndex.iso(dt.year, dt.month, dt.day) }
+    end
+    local items = self:buildRecentItems(entries)
+    UIManager:show(Menu:new{
+        title = _("Recent 7 days"),
+        item_table = items,
+        is_borderless = true,
+        title_bar_fm_style = true,
+    })
 end
 
 function OnePlugin:buildRecentItems(entries)
@@ -287,10 +351,11 @@ function OnePlugin:buildRecentItems(entries)
             or (entry.image_id and cached[tostring(entry.image_id)])
         local text, mandatory
         if entry.date then
-            text = entry.date
-            if info and info.vol then
-                text = T(_("VOL.%1"), info.vol) .. " · " .. entry.date
-            end
+            -- VOL is a pure function of the date, so label it even when not cached.
+            local y, m, d = entry.date:match("(%d+)-(%d+)-(%d+)")
+            local vol = (info and info.vol)
+                or (y and DateIndex.vol_from_date(tonumber(y), tonumber(m), tonumber(d)))
+            text = vol and (T(_("VOL.%1"), vol) .. " · " .. entry.date) or entry.date
         elseif info and info.vol then
             text = T(_("VOL.%1"), info.vol) .. " · " .. tostring(info.iso_date or "")
         else
@@ -320,9 +385,17 @@ end
 
 -- Open a recent-list entry, resolving its image by date first if needed.
 function OnePlugin:openRecentEntry(entry)
+    -- Already cached for this date? Open it straight from disk, no network.
+    if entry.date then
+        local info = One.cached_by_date(self.settings, entry.date)
+        if info and info.image_id then
+            self:openCachedIssue(info.image_id)
+            return
+        end
+    end
     self:runOnlineTask(_("Today's issue"), function()
         self:info(_("Please wait..."))
-        local ids = One.ids_from_entry(self.client, entry, self:makeProgress())
+        local ids = One.ids_from_entry(self.client, self.settings, entry, self:makeProgress())
         if not ids or not ids.image_id then
             self:showInfo(_("No content."))
             return
@@ -330,7 +403,6 @@ function OnePlugin:openRecentEntry(entry)
         local path, issue = One.prepare_issue(
             self.client, self.settings, ids,
             self.settings:get("content").image_quality, self:makeProgress())
-        self:afterFetch()
         self._current_issue = issue
         self:openFile(path)
     end)
@@ -343,7 +415,6 @@ function OnePlugin:openIssueByIds(ids)
         local quality = self.settings:get("content").image_quality
         local path, issue = One.prepare_issue(
             self.client, self.settings, ids, quality, self:makeProgress())
-        self:afterFetch()
         self._current_issue = issue
         self:openFile(path)
     end)
@@ -405,7 +476,7 @@ function OnePlugin:validateDate(y, m, d)
         return false
     end
     if DateIndex.vol_from_date(y, m, d) < 1 then
-        self:showInfo(_("ONE started on 2012-10-08; earlier dates do not exist."))
+        self:showInfo(_("ONE started on 2012-10-07; earlier dates do not exist."))
         return false
     end
     return true
@@ -418,7 +489,7 @@ function OnePlugin:openByDate(y, m, d)
     self:runOnlineTask(_("Browse by date"), function()
         self:info(_("Locating date..."))
         -- v3 gives full essay+question for a date; HTML fallback is image-only.
-        local ids = One.ids_for_date(self.client, y, m, d, function(stage, cur, budget)
+        local ids = One.ids_for_date(self.client, self.settings, y, m, d, function(stage, cur, budget)
             if stage == "index" then
                 self:info(_("Locating date..."))
             elseif cur then
@@ -433,7 +504,6 @@ function OnePlugin:openByDate(y, m, d)
         local quality = self.settings:get("content").image_quality
         local path, issue = One.prepare_issue(
             self.client, self.settings, ids, quality, self:makeProgress())
-        self:afterFetch()
         self._current_issue = issue
         self:openFile(path)
     end)
@@ -490,7 +560,8 @@ function OnePlugin:downloadDateRange(start_t, end_t, days)
         for i = 0, days - 1 do
             local dt = os.date("*t", base + i * 86400)
             self:info(T(_("Fetching %1/%2..."), i + 1, days))
-            local ids = One.ids_for_date(self.client, dt.year, dt.month, dt.day)
+            self:checkCancelled()
+            local ids = One.ids_for_date(self.client, self.settings, dt.year, dt.month, dt.day)
             if ids and ids.image_id then
                 local issue = One.load_issue(self.settings, ids.image_id)
                 if issue then
@@ -509,7 +580,6 @@ function OnePlugin:downloadDateRange(start_t, end_t, days)
         local range_label = DateIndex.iso(start_t.year, start_t.month, start_t.day)
             .. " – " .. DateIndex.iso(end_t.year, end_t.month, end_t.day)
         local path = One.build_collection(self.settings, issues, range_label)
-        self:afterFetch()
         self:openFile(path)
     end)
 end
@@ -521,7 +591,8 @@ function OnePlugin:downloadCollection(entries, label)
         local issues = {}
         for i = 1, #entries do
             self:info(T(_("Fetching %1/%2..."), i, #entries))
-            local ids = One.ids_from_entry(self.client, entries[i])
+            self:checkCancelled()
+            local ids = One.ids_from_entry(self.client, self.settings, entries[i])
             if ids and ids.image_id then
                 issues[#issues + 1] = One.fetch_issue(self.client, self.settings, ids, quality)
             end
@@ -535,7 +606,6 @@ function OnePlugin:downloadCollection(entries, label)
         local last = issues[#issues]
         local range_label = (last.iso_date or "") .. " – " .. (first.iso_date or "")
         local path = One.build_collection(self.settings, issues, range_label)
-        self:afterFetch()
         self:openFile(path)
     end)
 end
@@ -545,7 +615,8 @@ end
 -- ---------------------------------------------------------------------------
 
 function OnePlugin:showCached()
-    local cached = self.settings:get("cached", {})
+    -- Repair the index from disk first so the list always matches the folders.
+    local cached = One.rebuild_cache_index(self.settings)
     local list = {}
     for _id, info in pairs(cached) do
         list[#list + 1] = info
@@ -554,7 +625,13 @@ function OnePlugin:showCached()
         self:showInfo(_("No cached content yet."))
         return
     end
-    table.sort(list, function(a, b) return (a.saved_at or 0) > (b.saved_at or 0) end)
+    -- Newest issue first (by issue date, falling back to save time).
+    table.sort(list, function(a, b)
+        if a.iso_date and b.iso_date and a.iso_date ~= b.iso_date then
+            return a.iso_date > b.iso_date
+        end
+        return (a.saved_at or 0) > (b.saved_at or 0)
+    end)
 
     local stats = Cleanup.stats(self.settings)
     local items = {}
@@ -726,12 +803,6 @@ function OnePlugin:getCacheItems()
             end,
         },
         {
-            text_func = function()
-                return _("Image cache limit") .. ": " .. tostring(self.settings:get("cache").max_size_mb) .. " MB"
-            end,
-            sub_item_table_func = function() return self:getCacheLimitItems() end,
-        },
-        {
             text = _("Auto cleanup on start"),
             checked_func = function() return self.settings:get("cache").auto_cleanup end,
             callback = function()
@@ -783,25 +854,6 @@ function OnePlugin:getCacheItems()
             end,
         },
     }
-end
-
-function OnePlugin:getCacheLimitItems()
-    local function set_limit(mb)
-        local c = self.settings:get("cache")
-        c.max_size_mb = mb
-        self.settings:set("cache", c)
-        self.settings:flush()
-    end
-    local items = {}
-    for _i, mb in ipairs({ 100, 200, 500, 1000 }) do
-        items[#items + 1] = {
-            text = tostring(mb) .. " MB",
-            checked_func = function() return self.settings:get("cache").max_size_mb == mb end,
-            callback = function() set_limit(mb) end,
-            keep_menu_open = true,
-        }
-    end
-    return items
 end
 
 function OnePlugin:getCleanupThresholdItems()
@@ -900,12 +952,6 @@ function OnePlugin:lastCleanupLabel()
     return os.date("%Y-%m-%d %H:%M", last)
 end
 
--- After any fetch, enforce the image cache size cap.
-function OnePlugin:afterFetch()
-    local cache = self.settings:get("cache")
-    Cleanup.enforce_limit(self.settings, cache.max_size_mb)
-end
-
 -- Run automatic cleanup at most once per ~12h on startup.
 function OnePlugin:maybeAutoCleanup()
     local cache = self.settings:get("cache")
@@ -916,7 +962,6 @@ function OnePlugin:maybeAutoCleanup()
         return
     end
     local summary = Cleanup.run(self.settings, cache.cleanup_days)
-    Cleanup.enforce_limit(self.settings, cache.max_size_mb)
     cache.last_cleanup = os.time()
     self.settings:set("cache", cache)
     self.settings:flush()
@@ -934,7 +979,6 @@ end
 function OnePlugin:runCleanupNow()
     local cache = self.settings:get("cache")
     local summary = Cleanup.run(self.settings, cache.cleanup_days)
-    Cleanup.enforce_limit(self.settings, cache.max_size_mb)
     cache.last_cleanup = os.time()
     self.settings:set("cache", cache)
     self.settings:flush()

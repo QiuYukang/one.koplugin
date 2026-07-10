@@ -142,42 +142,6 @@ function Cleanup.run(settings, days)
     return summary
 end
 
--- Enforce an image-cache size cap by deleting the oldest images until under
--- `max_mb`. Returns count removed and bytes freed.
-function Cleanup.enforce_limit(settings, max_mb)
-    max_mb = tonumber(max_mb) or 0
-    if max_mb <= 0 then
-        return 0, 0
-    end
-    local limit = max_mb * 1024 * 1024
-    local images = {}
-    local total = 0
-    for _, dir in ipairs(subdirs(settings.cache_dir)) do
-        for _, f in ipairs(files_in(dir.path)) do
-            if is_image(f.name) then
-                images[#images + 1] = f
-                total = total + f.size
-            end
-        end
-    end
-    if total <= limit then
-        return 0, 0
-    end
-    table.sort(images, function(a, b) return a.mtime < b.mtime end)
-    local removed, freed = 0, 0
-    for _, f in ipairs(images) do
-        if total <= limit then
-            break
-        end
-        if os.remove(f.path) then
-            removed = removed + 1
-            freed = freed + f.size
-            total = total - f.size
-        end
-    end
-    return removed, freed
-end
-
 -- Remove files across all folders matching a predicate. Returns count, bytes.
 local function clear_matching(settings, predicate)
     local removed, bytes = 0, 0
