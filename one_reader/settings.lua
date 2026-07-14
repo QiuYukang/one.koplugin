@@ -9,6 +9,8 @@ local defaults = {
     content = {
         default_open = "today",      -- "today" | "menu"
         image_quality = "1080",      -- "orig" | "1080" | "900" | "600"
+        cache_days = 15,             -- default N for "cache recent N days"
+        end_of_book_prompt = true,   -- offer next/prev issue when an issue is finished
     },
     cache = {
         auto_cleanup = true,

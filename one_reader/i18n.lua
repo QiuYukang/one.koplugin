@@ -20,6 +20,10 @@ local zh = {
     ["Article"] = "文章",
     ["Question"] = "问答",
     ["VOL.%1"] = "VOL.%1",
+    ["On this day, ONE published only the image — no article or question."] =
+        "这一天，「ONE·一个」只更新了图文，没有文章与问答。",
+    ["No article on this day."] = "这一天，「ONE·一个」没有更新文章。",
+    ["No question on this day."] = "这一天，「ONE·一个」没有更新问答。",
 
     -- Fetch / progress
     ["Fetching today's issue..."] = "正在获取今日一期……",
@@ -36,10 +40,28 @@ local zh = {
 
     -- Recent / list
     ["Combine these %1 issues into one collection"] = "把这 %1 期合成一本合集",
+    ["Cache recent %1 days"] = "缓存最近 %1 天内容",
+    ["Cache recent N days..."] = "缓存最近 N 天内容…",
+    ["How many recent days to cache?"] = "缓存最近多少天？",
+    ["Caching %1 issues..."] = "正在缓存 %1 期……",
+    ["Caching %1/%2"] = "正在缓存第 %1/%2 期",
+    ["Cache complete: %1 new, %2 skipped, %3 failed."] = "缓存完成：新增 %1 期，跳过 %2 期，失败 %3 期。",
     ["today"] = "今日",
     ["cached"] = "已缓存",
     ["%1 days ago"] = "%1 天前",
     ["1 day ago"] = "1 天前",
+
+    -- Quick open / continue
+    ["Quick open"] = "快捷打开",
+    ["Quick open..."] = "快捷打开…",
+    ["Today"] = "今日",
+    ["Yesterday"] = "昨日",
+    ["Open today's issue"] = "打开今日一期",
+    ["Open yesterday's issue"] = "打开昨日一期",
+    ["More recent..."] = "更多最近…",
+    ["You've finished this issue. Continue?"] = "已读完本期，接下来？",
+    ["Close"] = "关闭",
+    ["Prompt to continue at end of issue"] = "读完一期后提示继续",
 
     -- Browse by date
     ["Pick a date..."] = "输入日期…",

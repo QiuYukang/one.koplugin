@@ -169,6 +169,7 @@ p { margin: 0.6em 0; text-indent: 0; }
 p.meta { color: #555; font-size: 0.85em; margin: 0 0 1em; }
 p.cita { font-size: 1.1em; margin-top: 1em; }
 p.editor { color: #555; font-size: 0.85em; margin-top: 1.5em; }
+p.note { color: #888; font-size: 0.9em; text-align: center; margin-top: 2.5em; }
 blockquote { margin: 1em 0; padding: 0 0 0 1em; border-left: 3px solid #999; color: #333; }
 div.img { text-align: center; margin: 1em 0; }
 div.img img { max-width: 100%; }
@@ -214,6 +215,24 @@ local function image_chapter_body(issue, asset_state)
     end
     if img.text then
         parts[#parts + 1] = '<p class="cita">' .. xml_escape(img.text) .. "</p>"
+    end
+    -- Gap-day note: ONE occasionally publishes only the image for a day (or omits
+    -- just the article or just the question). The image chapter is always present,
+    -- so it's the natural home for a gentle note about what's absent -- otherwise a
+    -- lone image chapter reads like a failed download.
+    local has_article = (issue.articles and #issue.articles > 0)
+        or (issue.article ~= nil)
+    local has_question = issue.question ~= nil
+    local note
+    if not has_article and not has_question then
+        note = _("On this day, ONE published only the image — no article or question.")
+    elseif not has_article then
+        note = _("No article on this day.")
+    elseif not has_question then
+        note = _("No question on this day.")
+    end
+    if note then
+        parts[#parts + 1] = '<p class="note">' .. xml_escape(note) .. "</p>"
     end
     return table.concat(parts, "\n")
 end

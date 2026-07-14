@@ -526,11 +526,28 @@ function One.resolve_date(client, settings, y, m, d, progress, today_date)
         end
     end
 
+    -- Resolve the server's latest published date once, and reject any target newer
+    -- than it up front. Without this guard a future date -- e.g. when the device
+    -- clock is set ahead, so validateDate lets it through -- sends the probe/scan
+    -- thrashing over ids that don't exist yet (tens of seconds, then failure). The
+    -- fetched date is reused as idlist's anchor so this costs no extra request.
+    local server_today = today_date
+    if client.has_json and not server_today then
+        local t = V3.today(client)
+        server_today = t and t.date
+    end
+    if server_today then
+        local ly, lm, ld = server_today:match("(%d+)-(%d+)-(%d+)")
+        if ly and DateIndex.days_between(y, m, d, tonumber(ly), tonumber(lm), tonumber(ld)) < 0 then
+            return nil -- target is newer than the latest issue: nothing to resolve
+        end
+    end
+
     -- Recent band: ids are scrambled, so date-diff probing thrashes and fails.
     -- hp/idlist enumerates strictly by date, so it resolves recent dates cheaply.
     if client.has_json then
         local id = V3.image_id_by_date(client, y, m, d, {
-            today_date = today_date,
+            today_date = server_today,
             on_progress = function(p) if progress then progress("index", p) end end,
         })
         if id then

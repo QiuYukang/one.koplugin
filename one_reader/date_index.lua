@@ -192,6 +192,7 @@ function DateIndex.scan_for_date(fetch_date, y, m, d, center, opts)
     local budget = opts.scan_budget or 30
     local max_radius = opts.max_radius or 45
     local tried = 0
+    local valid_seen = 0
     for radius = 0, max_radius do
         local ids = radius == 0 and { center } or { center + radius, center - radius }
         for _j = 1, #ids do
@@ -205,9 +206,16 @@ function DateIndex.scan_for_date(fetch_date, y, m, d, center, opts)
                     opts.on_progress(tried, budget)
                 end
                 local result = fetch_date(id)
-                if type(result) == "table" and result.year
-                    and DateIndex.days_between(result.year, result.month, result.day, y, m, d) == 0 then
-                    return tostring(id), result
+                if type(result) == "table" and result.year then
+                    valid_seen = valid_seen + 1
+                    if DateIndex.days_between(result.year, result.month, result.day, y, m, d) == 0 then
+                        return tostring(id), result
+                    end
+                elseif tried >= 6 and valid_seen == 0 then
+                    -- The interpolated center is close for any real date, so seeing
+                    -- only empty/404 ids means the target is out of range (e.g. newer
+                    -- than the latest issue). Bail instead of burning the whole budget.
+                    return nil, "beyond_range"
                 end
             end
         end

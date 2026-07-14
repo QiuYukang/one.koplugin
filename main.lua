@@ -1,3 +1,4 @@
+local ButtonDialog = require("ui/widget/buttondialog")
 local ConfirmBox = require("ui/widget/confirmbox")
 local DateTimeWidget = require("ui/widget/datetimewidget")
 local Dispatcher = require("dispatcher")
@@ -26,6 +27,10 @@ end
 local LOG_MODULE = "[ONE]"
 local PROJECT_URL = "https://github.com/qiuyukang/one.koplugin"
 
+-- Brand prefix for gesture/shortcut action titles so they read as one group
+-- (e.g. "ONE · Next issue") in KOReader's gesture manager.
+local ONE_PREFIX = "ONE · "
+
 local function log_error(err)
     return (tostring(err):gsub("[%c]+", " ")):sub(1, 400)
 end
@@ -48,6 +53,7 @@ function OnePlugin:init()
     self:onDispatcherRegisterActions()
     self.ui.menu:registerToMainMenu(self)
     self:maybeAutoCleanup()
+    self:setupEndOfBook()
     logger.info(LOG_MODULE, "initialized v" .. self.version)
 end
 
@@ -60,12 +66,24 @@ function OnePlugin:onDispatcherRegisterActions()
         category = "none", event = "ShowOne", title = _("ONE · 一个"),
         filemanager = true, reader = true,
     })
+    Dispatcher:registerAction("one_quick_open", {
+        category = "none", event = "OneQuickOpen", title = ONE_PREFIX .. _("Quick open"),
+        filemanager = true, reader = true,
+    })
+    Dispatcher:registerAction("one_today", {
+        category = "none", event = "OneToday", title = ONE_PREFIX .. _("Open today's issue"),
+        filemanager = true, reader = true,
+    })
+    Dispatcher:registerAction("one_yesterday", {
+        category = "none", event = "OneYesterday", title = ONE_PREFIX .. _("Open yesterday's issue"),
+        filemanager = true, reader = true,
+    })
     Dispatcher:registerAction("one_next_issue", {
-        category = "none", event = "OneNextIssue", title = _("Next issue"),
+        category = "none", event = "OneNextIssue", title = ONE_PREFIX .. _("Next issue"),
         reader = true,
     })
     Dispatcher:registerAction("one_prev_issue", {
-        category = "none", event = "OnePrevIssue", title = _("Previous issue"),
+        category = "none", event = "OnePrevIssue", title = ONE_PREFIX .. _("Previous issue"),
         reader = true,
     })
 end
@@ -77,6 +95,21 @@ function OnePlugin:onShowOne()
     else
         self:showMainMenuWidget()
     end
+    return true
+end
+
+function OnePlugin:onOneQuickOpen()
+    self:showQuickPick()
+    return true
+end
+
+function OnePlugin:onOneToday()
+    self:fetchTodayAndOpen()
+    return true
+end
+
+function OnePlugin:onOneYesterday()
+    self:openRelativeDay(-1)
     return true
 end
 
@@ -106,6 +139,11 @@ end
 
 function OnePlugin:getMainMenuItems()
     return {
+        {
+            text = _("Quick open..."),
+            keep_menu_open = false,
+            callback = function() self:showQuickPick() end,
+        },
         {
             text = _("Today's issue"),
             keep_menu_open = false,
@@ -170,23 +208,29 @@ end
 
 -- Map a (stage, cur, total) progress tick to a display string. Runs in the child
 -- (to write the progress file) so it must not touch `self`.
-local function progress_text(stage, cur, total)
+local function progress_text(stage, cur, total, prefix)
+    local text
     if stage == "index" then
-        return _("Locating date...")
+        text = _("Locating date...")
     elseif stage == "image" then
-        return _("Fetching image...")
+        text = _("Fetching image...")
     elseif stage == "article" then
-        return _("Fetching article...")
+        text = _("Fetching article...")
     elseif stage == "question" then
-        return _("Fetching question...")
+        text = _("Fetching question...")
     elseif stage == "images" and total and total > 0 then
-        return T(_("Downloading images (%1/%2)..."), cur, total)
+        text = T(_("Downloading images (%1/%2)..."), cur, total)
     elseif stage == "collect" and total then
-        return T(_("Fetching %1/%2..."), cur, total)
+        text = T(_("Fetching %1/%2..."), cur, total)
     elseif stage == "build" then
-        return _("Building EPUB...")
+        text = _("Building EPUB...")
+    else
+        text = _("Please wait...")
     end
-    return _("Please wait...")
+    if prefix and prefix ~= "" then
+        return prefix .. text
+    end
+    return text
 end
 
 -- Run a network fetch with a working Cancel button AND live progress.
@@ -255,11 +299,11 @@ function OnePlugin:runFetch(label, busy_text, job, on_done)
     co = coroutine.create(function()
         set_text(busy_text)
         local pid, read_fd = ffiutil.runInSubProcess(function(_pid, write_fd)
-            local function progress(stage, cur, total)
+            local function progress(stage, cur, total, prefix)
                 local tmp = progress_path .. ".tmp"
                 local f = io.open(tmp, "w")
                 if f then
-                    f:write(progress_text(stage, cur, total))
+                    f:write(progress_text(stage, cur, total, prefix))
                     f:close()
                     os.rename(tmp, progress_path) -- atomic: parent never reads a half file
                 end
@@ -384,6 +428,91 @@ function OnePlugin:fetchTodayAndOpen()
     end)
 end
 
+-- Open the issue `offset` days from today (offset <= 0). Used by the "yesterday"
+-- action and the quick-pick shortcuts.
+function OnePlugin:openRelativeDay(offset)
+    local t = os.date("*t")
+    local base = os.time({ year = t.year, month = t.month, day = t.day, hour = 12 })
+    local dt = os.date("*t", base + offset * 86400)
+    self:openByDate(dt.year, dt.month, dt.day)
+end
+
+-- The ONE issue currently open, if any: the in-memory one set on open, else the
+-- metadata beside the open document (so it works after opening a cached EPUB from
+-- the file browser too). Returns an issue table (with iso_date) or nil.
+function OnePlugin:currentIssue()
+    if self._current_issue and self._current_issue.iso_date then
+        return self._current_issue
+    end
+    local doc = self.ui and self.ui.document
+    local path = doc and doc.file
+    if path and path:find(self.settings.cache_dir, 1, true) == 1 then
+        return One.load_issue_by_path(path)
+    end
+    return nil
+end
+
+-- ---------------------------------------------------------------------------
+-- Quick open: one gesture/tap to today, yesterday, adjacent, or a recent day.
+-- ---------------------------------------------------------------------------
+
+function OnePlugin:showQuickPick()
+    local dialog
+    local function act(fn)
+        return function()
+            UIManager:close(dialog)
+            fn()
+        end
+    end
+
+    local buttons = {
+        {
+            { text = _("Today"), callback = act(function() self:fetchTodayAndOpen() end) },
+            { text = _("Yesterday"), callback = act(function() self:openRelativeDay(-1) end) },
+        },
+    }
+
+    -- A few more recent days (2..5 days back), labelled by VOL/date + cached mark.
+    local t = os.date("*t")
+    local base = os.time({ year = t.year, month = t.month, day = t.day, hour = 12 })
+    for offset = -2, -5, -1 do
+        local dt = os.date("*t", base + offset * 86400)
+        if DateIndex.vol_from_date(dt.year, dt.month, dt.day) >= 1 then
+            local iso = DateIndex.iso(dt.year, dt.month, dt.day)
+            local vol = DateIndex.vol_from_date(dt.year, dt.month, dt.day)
+            local label = T(_("VOL.%1"), vol) .. " · " .. iso
+            if One.is_cached_by_date(self.settings, iso) then
+                label = label .. "  ✓"
+            end
+            buttons[#buttons + 1] = {
+                { text = label, callback = act(function()
+                    self:openByDate(dt.year, dt.month, dt.day)
+                end) },
+            }
+        end
+    end
+
+    -- Adjacent-issue row only when a ONE issue is currently open.
+    if self:currentIssue() then
+        buttons[#buttons + 1] = {
+            { text = "← " .. _("Previous issue"), callback = act(function() self:openAdjacentIssue(-1) end) },
+            { text = _("Next issue") .. " →", callback = act(function() self:openAdjacentIssue(1) end) },
+        }
+    end
+
+    buttons[#buttons + 1] = {
+        { text = _("More recent..."), callback = act(function() self:showRecent() end) },
+        { text = _("Cached content"), callback = act(function() self:showCached() end) },
+    }
+
+    dialog = ButtonDialog:new{
+        title = _("Quick open"),
+        title_align = "center",
+        buttons = buttons,
+    }
+    UIManager:show(dialog)
+end
+
 -- ---------------------------------------------------------------------------
 -- Recent 7 days
 -- ---------------------------------------------------------------------------
@@ -400,12 +529,18 @@ function OnePlugin:showRecent()
         entries[i + 1] = { date = DateIndex.iso(dt.year, dt.month, dt.day) }
     end
     local items = self:buildRecentItems(entries)
-    UIManager:show(Menu:new{
+    -- Keep a reference so a batch cache can refresh the "cached" marks in place.
+    -- Note: the base Menu calls close_callback on every item tap (not just on real
+    -- close), so we must NOT clear the reference there -- doing so would drop it the
+    -- instant the user taps a cache action, before the refresh can run.
+    self._recent_entries = entries
+    self._recent_menu = Menu:new{
         title = _("Recent 7 days"),
         item_table = items,
         is_borderless = true,
         title_bar_fm_style = true,
-    })
+    }
+    UIManager:show(self._recent_menu)
 end
 
 function OnePlugin:buildRecentItems(entries)
@@ -431,14 +566,96 @@ function OnePlugin:buildRecentItems(entries)
             end,
         }
     end
+    -- Pre-cache actions: fetch each day as its own EPUB (already-cached days are
+    -- skipped). The list length feeds the first action; the second lets the user
+    -- pick an arbitrary depth.
     items[#items + 1] = {
-        text = "▶ " .. T(_("Combine these %1 issues into one collection"), #entries),
+        text = "▶ " .. T(_("Cache recent %1 days"), #entries),
         keep_menu_open = false,
         callback = function()
-            self:downloadCollection(entries, _("Recent 7 days"))
+            self:cacheRecentDays(#entries)
+        end,
+    }
+    items[#items + 1] = {
+        text = "▶ " .. _("Cache recent N days..."),
+        keep_menu_open = true,
+        callback = function()
+            UIManager:show(SpinWidget:new{
+                value = self.settings:get("content").cache_days,
+                value_min = 1, value_max = 90,
+                ok_text = _("OK"),
+                title_text = _("How many recent days to cache?"),
+                callback = function(spin)
+                    local c = self.settings:get("content")
+                    c.cache_days = spin.value
+                    self.settings:set("content", c)
+                    self.settings:flush()
+                    self:cacheRecentDays(spin.value)
+                end,
+            })
         end,
     }
     return items
+end
+
+-- Pre-cache the most recent `n` days, each as its own EPUB. Days already cached
+-- on disk are skipped. Reuses runFetch (cancelable, live progress, subprocess);
+-- the job returns an encoded "SUMMARY:new:skipped:failed" string which on_done
+-- turns into a summary message. Nothing is opened -- this is pure caching.
+function OnePlugin:cacheRecentDays(n)
+    local t = os.date("*t")
+    local base = os.time({ year = t.year, month = t.month, day = t.day, hour = 12 })
+    local days = {}
+    for i = 0, n - 1 do
+        local dt = os.date("*t", base - i * 86400)
+        days[i + 1] = DateIndex.iso(dt.year, dt.month, dt.day)
+    end
+    self:runFetch(T(_("Cache recent %1 days"), n), T(_("Caching %1 issues..."), n),
+        function(progress)
+            local quality = self.settings:get("content").image_quality
+            local new_count, skipped, failed = 0, 0, 0
+            for i = 1, #days do
+                local iso = days[i]
+                if One.is_cached_by_date(self.settings, iso) then
+                    skipped = skipped + 1
+                else
+                    -- Prefix each per-issue sub-step (image/article/images...) with
+                    -- the day counter so the progress box shows detailed progress,
+                    -- just like a single download, plus which day we're on.
+                    local prefix = T(_("Caching %1/%2"), i, #days) .. "\n"
+                    local day_progress = function(stage, cur, total)
+                        progress(stage, cur, total, prefix)
+                    end
+                    local y, m, d = iso:match("(%d+)-(%d+)-(%d+)")
+                    local ids = One.ids_for_date(self.client, self.settings,
+                        tonumber(y), tonumber(m), tonumber(d), day_progress)
+                    if ids and ids.image_id then
+                        local ok = pcall(function()
+                            return One.prepare_issue(self.client, self.settings, ids, quality, day_progress)
+                        end)
+                        if ok then new_count = new_count + 1 else failed = failed + 1 end
+                    else
+                        failed = failed + 1
+                    end
+                end
+            end
+            return string.format("SUMMARY:%d:%d:%d", new_count, skipped, failed)
+        end,
+        function(result)
+            local new_count, skipped, failed = result:match("^SUMMARY:(%d+):(%d+):(%d+)$")
+            self:refreshRecent() -- update the "cached" marks in the open recent list
+            self:showInfo(T(_("Cache complete: %1 new, %2 skipped, %3 failed."),
+                new_count or "?", skipped or "?", failed or "?"))
+        end)
+end
+
+-- Rebuild the open "Recent 7 days" list in place so cached marks reflect disk
+-- truth after a batch cache. No-op if the list isn't currently shown.
+function OnePlugin:refreshRecent()
+    if self._recent_menu and self._recent_entries then
+        self._recent_menu:switchItemTable(_("Recent 7 days"),
+            self:buildRecentItems(self._recent_entries))
+    end
 end
 
 -- Open a recent-list entry, resolving its image by date first if needed.
@@ -702,7 +919,7 @@ end
 -- ---------------------------------------------------------------------------
 
 function OnePlugin:openAdjacentIssue(direction)
-    local issue = self._current_issue
+    local issue = self:currentIssue()
     if not issue or not issue.iso_date then
         self:showInfo(_("No content."))
         return
@@ -720,6 +937,66 @@ function OnePlugin:openAdjacentIssue(direction)
         return
     end
     self:openByDate(dt.year, dt.month, dt.day)
+end
+
+-- Wrap ReaderStatus:onEndOfBook so finishing a ONE issue offers next/previous
+-- issue instead of (or before) the generic end-of-book menu. We wrap rather than
+-- add our own onEndOfBook handler because ReaderStatus is registered before
+-- plugins and does NOT consume the EndOfBook event -- a second handler would just
+-- stack a second dialog. The wrapper only acts for ONE issues (else it delegates
+-- to the original), is guarded by a setting, and no-ops outside the reader.
+function OnePlugin:setupEndOfBook()
+    local status = self.ui and self.ui.status
+    if not status or status._one_eob_wrapped then
+        return
+    end
+    status._one_eob_wrapped = true
+    local original = status.onEndOfBook
+    local plugin = self
+    status.onEndOfBook = function(status_self, ...)
+        if plugin.settings:get("content").end_of_book_prompt then
+            local issue = plugin:currentIssue()
+            if issue and issue.iso_date then
+                plugin:showEndOfBookPrompt(issue)
+                return true -- our dialog replaces the default end-of-book menu
+            end
+        end
+        return original(status_self, ...)
+    end
+end
+
+function OnePlugin:showEndOfBookPrompt(issue)
+    local dialog
+    local function act(fn)
+        return function()
+            UIManager:close(dialog)
+            fn()
+        end
+    end
+    local y, m, d = issue.iso_date:match("(%d+)-(%d+)-(%d+)")
+    local today = os.date("*t")
+    -- No newer issue exists once we're at today's date.
+    local is_latest = y and DateIndex.days_between(today.year, today.month, today.day,
+        tonumber(y), tonumber(m), tonumber(d)) >= 0
+    dialog = ButtonDialog:new{
+        title = _("You've finished this issue. Continue?")
+            .. "\n" .. T(_("VOL.%1"), issue.vol or "?") .. " · " .. issue.iso_date,
+        title_align = "center",
+        buttons = {
+            {
+                { text = "← " .. _("Previous issue"),
+                  callback = act(function() self:openAdjacentIssue(-1) end) },
+                { text = _("Next issue") .. " →", enabled = not is_latest,
+                  callback = act(function() self:openAdjacentIssue(1) end) },
+            },
+            {
+                { text = _("Pick a date..."),
+                  callback = act(function() self:showDatePicker() end) },
+                { text = _("Close"), callback = act(function() end) },
+            },
+        },
+    }
+    UIManager:show(dialog)
 end
 
 -- ---------------------------------------------------------------------------
@@ -755,6 +1032,19 @@ function OnePlugin:getContentSettingsItems()
             callback = function()
                 local c = self.settings:get("content")
                 c.default_open = (c.default_open == "today") and "menu" or "today"
+                self.settings:set("content", c)
+                self.settings:flush()
+            end,
+            keep_menu_open = true,
+        },
+        {
+            text = _("Prompt to continue at end of issue"),
+            checked_func = function()
+                return self.settings:get("content").end_of_book_prompt
+            end,
+            callback = function()
+                local c = self.settings:get("content")
+                c.end_of_book_prompt = not c.end_of_book_prompt
                 self.settings:set("content", c)
                 self.settings:flush()
             end,

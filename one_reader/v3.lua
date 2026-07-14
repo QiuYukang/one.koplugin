@@ -158,6 +158,13 @@ function V3.ids_for_date(client, y, m, d, opts)
     local page = math.max(0, math.floor(days_diff / 5) - 2)
     local empty_streak = 0
     local guard = 0
+    -- Larger page = older dates. Track the last page found entirely NEWER than the
+    -- target (all dates > target) and entirely OLDER (all dates < target). When those
+    -- two pages are adjacent, the target falls in the gap between them and simply
+    -- isn't published (a gap day, e.g. 2026-06-14). Without this the estimate jump
+    -- (page-5) oscillates between the two straddling pages until the guard trips --
+    -- hundreds of requests, tens of seconds -- before failing anyway.
+    local newer_page, older_page
     while page < 1200 and guard < 400 do
         guard = guard + 1
         if opts.on_progress then
@@ -181,6 +188,10 @@ function V3.ids_for_date(client, y, m, d, opts)
                 end
                 return nil -- date is within range but has no group (gap day)
             elseif first < target then
+                older_page = page -- this whole page is older than the target
+                if newer_page and older_page == newer_page + 1 then
+                    return nil -- target sits in the gap between two adjacent pages
+                end
                 page = math.max(0, page - 5) -- estimate went too deep
                 if page == 0 then
                     -- avoid infinite loop at the boundary
@@ -192,6 +203,10 @@ function V3.ids_for_date(client, y, m, d, opts)
                     return nil
                 end
             else
+                newer_page = page -- this whole page is newer than the target
+                if older_page and older_page == newer_page + 1 then
+                    return nil -- target sits in the gap between two adjacent pages
+                end
                 page = page + 1 -- target is older
             end
         end
