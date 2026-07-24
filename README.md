@@ -1,10 +1,8 @@
-但# one.koplugin
+# one.koplugin
 
-在 KOReader 上离线阅读「ONE · 一个」（wufazhuce.com）每日更新的**图文 / 文章 / 问答**。
+在 KOReader 上离线阅读「ONE · 一个」（wufazhuce.com）每日更新的内容。
 
-每天只为你准备一张图片、一篇文字和一个问答。
-
-复杂世界，一个就够。
+每天只为你准备一张图片、一篇文字和一个问答。复杂世界，一个就够！
 
 ## 安装
 
