@@ -52,13 +52,12 @@ local zh = {
     ["1 day ago"] = "1 天前",
 
     -- Quick open / continue
-    ["Quick open"] = "快捷打开",
-    ["Quick open..."] = "快捷打开…",
+    ["Quick open"] = "快捷菜单",
+    ["Quick open..."] = "快捷菜单…",
     ["Today"] = "今日",
     ["Yesterday"] = "昨日",
     ["Open today's issue"] = "打开今日一期",
     ["Open yesterday's issue"] = "打开昨日一期",
-    ["More recent..."] = "更多最近…",
     ["You've finished this issue. Continue?"] = "已读完本期，接下来？",
     ["Close"] = "关闭",
     ["Prompt to continue at end of issue"] = "读完一期后提示继续",

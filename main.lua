@@ -2,6 +2,7 @@ local ButtonDialog = require("ui/widget/buttondialog")
 local ConfirmBox = require("ui/widget/confirmbox")
 local DateTimeWidget = require("ui/widget/datetimewidget")
 local Dispatcher = require("dispatcher")
+local Event = require("ui/event")
 local InfoMessage = require("ui/widget/infomessage")
 local Menu = require("ui/widget/menu")
 local Notification = require("ui/widget/notification")
@@ -501,7 +502,7 @@ function OnePlugin:showQuickPick()
     end
 
     buttons[#buttons + 1] = {
-        { text = _("More recent..."), callback = act(function() self:showRecent() end) },
+        { text = _("Recent 7 days"), callback = act(function() self:showRecent() end) },
         { text = _("Cached content"), callback = act(function() self:showCached() end) },
     }
 
@@ -992,7 +993,7 @@ function OnePlugin:showEndOfBookPrompt(issue)
             {
                 { text = _("Pick a date..."),
                   callback = act(function() self:showDatePicker() end) },
-                { text = _("Close"), callback = act(function() end) },
+                { text = _("Close"), callback = act(function() self.ui:handleEvent(Event:new("Close")) end) },
             },
         },
     }
